@@ -34,39 +34,3 @@ ENHANCE_QUERY_DESCRIPTION = "Analyze the initial query and its results to genera
 
 # Web search tool description
 WEB_SEARCH_DESCRIPTION = "Search the internet for current information."
-
-# Video editing tool descriptions
-VIDEO_ANALYZE_DESCRIPTION = """Analyze input video clips to extract metadata and create VideoClip objects.
-Input: List of video file paths.
-Output: List of VideoClip objects with metadata."""
-
-VIDEO_EDIT_PLAN_DESCRIPTION = """Create an editing plan based on input clips and user prompt.
-Input: List of VideoClip objects and a text prompt describing desired edits.
-Output: Dictionary containing structured editing plan.
-Example: create_edit_plan(clips, "edit these clips into a promotional video with captions")"""
-
-VIDEO_RENDER_REQUIREMENTS_DESCRIPTION = """Estimate GPU memory and compute requirements for video editing job.
-Input: Dictionary containing edit plan.
-Output: RenderJob object with memory and compute requirements."""
-
-VIDEO_GPU_SELECT_DESCRIPTION = """Select optimal GPU for video rendering based on job requirements.
-Input: RenderJob object.
-Output: Dictionary containing selected GPU specifications.
-Rules:
-1. Checks available GPU memory against job requirements
-2. Verifies GPU compatibility with required effects
-3. Selects GPU with best specs that meets all requirements"""
-
-VIDEO_EFFECTS_DESCRIPTION = """Apply AI-generated effects to video clips based on prompts.
-Input: VideoClip object and effect prompt string.
-Output: Modified VideoClip with applied effects.
-Example: apply_ai_effects(clip, "make this video look like it was shot in Paris")"""
-
-VIDEO_RENDER_DESCRIPTION = """Render final video using selected GPU.
-Input: RenderJob object and selected GPU specifications.
-Output: Path to rendered video file."""
-
-VIDEO_PROCESS_REQUEST_DESCRIPTION = """Main entry point for processing video editing requests.
-Input: List of video paths and edit prompt string.
-Output: Path to final rendered video.
-Example: process_video_request([video1.mp4, video2.mp4], "create a promotional video with smooth transitions")""" 
