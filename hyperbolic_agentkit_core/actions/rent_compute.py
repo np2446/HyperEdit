@@ -43,20 +43,23 @@ class RentComputeInput(BaseModel):
 
 def rent_compute(cluster_name: str, node_name: str, gpu_count: str) -> str:
     """
-   Creates a marketplace instance using the Hyperbolic API and returns the response as a formatted string.
+    Creates a marketplace instance using the Hyperbolic API and returns the response as a formatted string.
 
-   Args:
-       cluster_name (str): Name of the cluster to create
-       node_name (str): Name of the node
-       gpu_count (str): Number of GPUs to allocate
+    Args:
+        cluster_name (str): Name of the cluster to create
+        node_name (str): Name of the node
+        gpu_count (str): Number of GPUs to allocate
 
-   Returns:
-       str: A formatted string representation of the API response
+    Returns:
+        str: A formatted string representation of the API response
 
-   Raises:
-       requests.exceptions.RequestException: If the API request fails
-       ValueError: If required parameters are invalid
-   """
+    Raises:
+        requests.exceptions.RequestException: If the API request fails
+        ValueError: If required parameters are invalid
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+
     # Input validation
     if not cluster_name or not node_name or not gpu_count:
         raise ValueError("cluster_name, node_name, and gpu_count are required")
@@ -73,12 +76,20 @@ def rent_compute(cluster_name: str, node_name: str, gpu_count: str) -> str:
     payload = {
         "cluster_name": cluster_name,
         "node_name": node_name,
-        "gpu_count": gpu_count
+        "gpu_count": int(gpu_count),  # Ensure gpu_count is an integer
+        "instance_type": "gpu"  # Add instance type
     }
+
+    logger.debug(f"Making request to {endpoint}")
+    logger.debug(f"Request payload: {json.dumps(payload, indent=2)}")
 
     try:
         # Make the request
         response = requests.post(endpoint, headers=headers, json=payload)
+        logger.debug(f"Response status code: {response.status_code}")
+        logger.debug(f"Response headers: {dict(response.headers)}")
+        logger.debug(f"Response content: {response.text}")
+
         response.raise_for_status()
 
         # Get the response content
@@ -101,6 +112,8 @@ def rent_compute(cluster_name: str, node_name: str, gpu_count: str) -> str:
             except json.JSONDecodeError:
                 # If response isn't JSON, include the raw text
                 error_message += f"\nResponse: {e.response.text}"
+            # Add request details to error message
+            error_message += f"\nRequest payload: {json.dumps(payload, indent=2)}"
 
         raise requests.exceptions.RequestException(error_message)
 

@@ -182,7 +182,7 @@ def loadCharacters(charactersArg: str) -> List[Dict[str, Any]]:
 
     if not characterPaths:
         # Load default chainyoda character
-        default_path = os.path.join(os.path.dirname(__file__), "characters/default.json")
+        default_path = os.path.join(os.path.dirname(__file__), "characters/chainyoda.json")
         characterPaths.append(default_path)
 
     for characterPath in characterPaths:
@@ -381,6 +381,14 @@ def create_agent_tools(llm, knowledge_base, podcast_knowledge_base, agent_kit, c
             allow_dangerous_requests=os.getenv("ALLOW_DANGEROUS_REQUEST", "true").lower() == "true",
         )
         tools.extend(toolkit.get_tools())
+
+    # Add video editing tools if enabled
+    if os.getenv("USE_VIDEO_TOOLS", "true").lower() == "true":
+        print_system("Adding video editing tools...")
+        from video_agent.agent_tools import create_video_editing_tools
+        video_tools = create_video_editing_tools()
+        tools.extend(video_tools)
+        print_system(f"Added {len(video_tools)} video editing tools")
 
     return tools
 

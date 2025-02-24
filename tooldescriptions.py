@@ -33,4 +33,40 @@ PODCAST_KNOWLEDGE_BASE_DESCRIPTION = "Query the podcast knowledge base for relev
 ENHANCE_QUERY_DESCRIPTION = "Analyze the initial query and its results to generate an enhanced follow-up query. Takes two parameters: initial_query (the original query string) and query_result (the results obtained from that query)."
 
 # Web search tool description
-WEB_SEARCH_DESCRIPTION = "Search the internet for current information." 
+WEB_SEARCH_DESCRIPTION = "Search the internet for current information."
+
+# Video editing tool descriptions
+VIDEO_EDIT_PLAN_DESCRIPTION = """Create a detailed plan for video editing based on input videos and editing requirements.
+Input should be a JSON object with:
+- video_paths: List of paths to input videos
+- edit_prompt: Description of desired edits and final output
+- output_path: Desired output path for the final video
+
+Example: {
+    "video_paths": ["/path/to/video1.mp4", "/path/to/video2.mp4"],
+    "edit_prompt": "Create a promotional video with captions and enhance the quality",
+    "output_path": "/path/to/output.mp4"
+}
+
+Rules:
+1. All input videos must exist and be accessible
+2. Edit prompt should clearly describe desired modifications
+3. Output path must be writable"""
+
+VIDEO_EDIT_EXECUTE_DESCRIPTION = """Execute a video editing plan using Hyperbolic GPU resources.
+Input should be a JSON object with:
+- plan: The VideoEditPlan object returned from plan_video_edit
+- request: The original VideoEditRequest object
+
+Important notes:
+- Automatically selects and rents appropriate GPU resources based on video requirements
+- GPU selection considers resolution, duration, and editing complexity
+- Uses Hyperbolic platform for GPU-accelerated video processing
+- Supports AI-powered enhancements, captions, and video assembly"""
+
+# Add to existing exports if needed
+__all__ = [
+    # ... existing exports ...
+    'VIDEO_EDIT_PLAN_DESCRIPTION',
+    'VIDEO_EDIT_EXECUTE_DESCRIPTION'
+]

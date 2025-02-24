@@ -38,6 +38,10 @@ starlette = "^0.45.3"
 uvicorn = "^0.34.0"
 browser-use = "^0.1.37"
 tweepy = "^4.15.0"
+pillow = ">=9.2.0,<11.0"
+opencv-python = "^4.11.0.86"
+langchain = "^0.3.19"
+moviepy = "1.0.3"
 
 
 
@@ -50,6 +54,11 @@ google-cloud-aiplatform = "^1.38.0"
 vertexai = "^0.0.1"
 numpy = "<2.0.0"
 gradio = "^5.12.0"
+pytest = "^8.3.4"
+pytest-cov = "^6.0.0"
+pytest-mock = "^3.14.0"
+coverage = "^7.6.12"
+mock = "^5.1.0"
 
 [build-system]
 requires = ["poetry-core"]
