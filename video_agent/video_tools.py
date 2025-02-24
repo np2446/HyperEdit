@@ -39,18 +39,26 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import moviepy.editor as mp
 import numpy as np
 import torch
+import requests
 from langchain.tools import Tool
 from moviepy.video.fx.all import colorx, resize, speedx
 from PIL import Image, ImageDraw, ImageFont
 from pydantic import BaseModel, Field
+import cv2
 
 # Local imports
-from hyperbolic_agentkit_core.actions import get_available_gpus, rent_compute, terminate_compute
+from hyperbolic_agentkit_core.actions.get_available_gpus import get_available_gpus
+from hyperbolic_agentkit_core.actions.rent_compute import rent_compute
+from hyperbolic_agentkit_core.actions.terminate_compute import terminate_compute
+from hyperbolic_agentkit_core.actions.utils import get_api_key
+from hyperbolic_agentkit_core.actions.get_current_balance import get_current_balance
+from hyperbolic_agentkit_core.actions.remote_shell import execute_remote_command
+from hyperbolic_agentkit_core.actions.ssh_access import connect_ssh
 
 # Constants
 DEFAULT_RESOLUTION = (1920, 1080)
-DEFAULT_VRAM_GB = 8
-MIN_4K_WIDTH = 3840
+DEFAULT_VRAM_GB = 8  # Default VRAM requirement in GB
+MIN_4K_WIDTH = 3840  # Minimum width for 4K resolution
 
 class Position(BaseModel):
     """Defines position and size of a clip in the composition."""
@@ -355,212 +363,591 @@ def create_video_edit_plan(request: VideoEditRequest) -> VideoEditPlan:
         estimated_duration=total_duration * processing_factor
     )
 
-def select_optimal_gpu(requirements: Dict[str, float]) -> Dict[str, str]:
+def select_optimal_gpu(requirements):
     """
-    Select the optimal GPU configuration from available resources.
-    
-    This function matches processing requirements with available GPU resources
-    on the Hyperbolic platform to find the most cost-effective solution.
+    Select the optimal GPU instance based on requirements.
     
     Args:
-        requirements (Dict[str, float]): Required GPU specifications
-            - vram_gb: Minimum VRAM in gigabytes
-            - gpu_count: Minimum number of GPUs
-    
+        requirements (Dict[str, float]): Dictionary containing GPU requirements
+            - vram_gb (float): Required VRAM in GB
+            - gpu_count (float): Number of GPUs needed
+        
     Returns:
-        Dict[str, str]: Selected GPU configuration:
-            - cluster_name: Name of the selected cluster
-            - node_name: Name of the selected node
-            - gpu_count: Number of GPUs to rent
-    
-    Selection Criteria:
-        - VRAM capacity
-        - GPU availability
-        - Cost efficiency
-        - Processing capabilities
-    
+        dict: Selected GPU instance details
+        
     Raises:
-        ValueError: If no suitable GPUs are available
+        ValueError: If no suitable GPUs are found or if balance is insufficient
     """
-    available_gpus = get_available_gpus()
+    import logging
+    logger = logging.getLogger(__name__)
     
-    # Parse available GPUs
-    gpu_options = []
-    current_gpu = {}
+    # Get current balance
+    api_key = get_api_key()
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}"
+    }
     
-    for line in available_gpus.split('\n'):
-        if line.startswith('Cluster:'):
-            if current_gpu:
-                gpu_options.append(current_gpu)
-            current_gpu = {'cluster_name': line.split(': ')[1]}
-        elif line.startswith('Node ID:'):
-            current_gpu['node_name'] = line.split(': ')[1]
-        elif line.startswith('GPU Model:'):
-            current_gpu['model'] = line.split(': ')[1]
-        elif line.startswith('Available GPUs:'):
-            current_gpu['available'] = int(line.split(': ')[1].split('/')[0])
+    try:
+        # Get current balance
+        balance_url = "https://api.hyperbolic.xyz/billing/get_current_balance"
+        balance_response = requests.get(balance_url, headers=headers)
+        balance_response.raise_for_status()
+        balance_data = balance_response.json()
+        
+        # Credits are already in dollars (e.g. 100 credits = $1.00)
+        balance_usd = balance_data.get("credits", 0) / 100
+        logger.debug(f"Current balance: ${balance_usd:.2f}")
+        
+    except Exception as e:
+        logger.warning(f"Could not parse balance from response: {str(e)}")
+        balance_usd = 0
     
-    if current_gpu:
-        gpu_options.append(current_gpu)
+    # Get purchase history to check for any pending transactions
+    try:
+        history_url = "https://api.hyperbolic.xyz/billing/purchase_history"
+        history_response = requests.get(history_url, headers=headers)
+        history_response.raise_for_status()
+    except Exception as e:
+        logger.warning(f"Could not get purchase history: {str(e)}")
+
+    url = "https://api.hyperbolic.xyz/v1/marketplace"
+    data = {"filters": {}}
+    response = requests.post(url, headers=headers, json=data)
+    data = response.json()
     
-    # Filter suitable GPUs
-    suitable_gpus = [
-        gpu for gpu in gpu_options
-        if gpu['available'] >= requirements['gpu_count']
-        and any(vram_str in gpu['model'].lower() for vram_str in [
-            '24gb', '32gb', '48gb'
-        ] if requirements['vram_gb'] <= int(vram_str[:2]))
-    ]
+    if "instances" not in data:
+        raise ValueError("No instances found in marketplace response")
+        
+    suitable_nodes = []
+    lowest_price = float('inf')
     
-    if not suitable_gpus:
-        raise ValueError("No suitable GPUs available for the required specifications")
+    for node in data["instances"]:
+        logger.debug(f"\nEvaluating node: {node.get('id')}")
+        
+        # Check node status
+        status = node.get("status")
+        logger.debug(f"Node status: {status}")
+        if status != "node_ready":
+            continue
+            
+        # Check if node is reserved
+        is_reserved = node.get("reserved", True)
+        logger.debug(f"Node reserved: {is_reserved}")
+        if is_reserved:
+            logger.debug("Skipping reserved node")
+            continue
+            
+        # Get GPU information
+        gpus = node.get("hardware", {}).get("gpus", [])
+        if not gpus:
+            continue
+            
+        logger.debug(f"Found {len(gpus)} GPUs in hardware specs")
+        
+        # Check if GPUs meet memory requirements
+        gpus_meeting_requirements = 0
+        for gpu in gpus:
+            memory_mb = gpu.get("ram", 0)
+            model = gpu.get("model", "Unknown")
+            logger.debug(f"Evaluating GPU {model} - Memory: {memory_mb}MB, Required: {requirements['vram_gb'] * 1024}MB")
+            if memory_mb >= requirements['vram_gb'] * 1024:
+                gpus_meeting_requirements += 1
+                
+        logger.debug(f"Found {gpus_meeting_requirements} GPUs meeting memory requirements")
+        
+        # Get total and reserved GPU counts
+        total_gpus = node.get("gpus_total", 0)
+        reserved_gpus = node.get("gpus_reserved", 0)
+        available_gpus = total_gpus - reserved_gpus
+        
+        logger.debug(f"Total GPUs: {total_gpus}, Reserved: {reserved_gpus}, Available: {available_gpus}")
+        
+        if available_gpus < requirements['gpu_count']:
+            logger.debug(f"Not enough available GPUs (need {requirements['gpu_count']}, have {available_gpus})")
+            continue
+            
+        # Get price
+        price_per_hour = node.get("pricing", {}).get("price", {}).get("amount", 0) / 100
+        logger.debug(f"Node meets requirements, price: ${price_per_hour}/hour")
+        
+        # Update lowest price seen
+        lowest_price = min(lowest_price, price_per_hour)
+        
+        # Check if price is within our balance
+        if price_per_hour > balance_usd:
+            logger.debug(f"Node price ${price_per_hour}/hour exceeds balance ${balance_usd}")
+            continue
+        
+        suitable_nodes.append({
+            "cluster_name": node.get("cluster_name"),
+            "node_name": node.get("id"),  # Use node ID as the node name
+            "gpu_count": str(int(requirements['gpu_count'])),  # Convert to string for API
+            "available_gpus": available_gpus,
+            "price": price_per_hour,
+            "gpu_model": gpus[0].get("model"),
+            "status": status
+        })
     
-    # Select most cost-effective option
-    selected_gpu = suitable_gpus[0]  # Could implement more sophisticated selection logic
+    if not suitable_nodes:
+        error_msg = "No suitable GPUs found"
+        if lowest_price != float('inf'):
+            error_msg = f"Insufficient balance (${balance_usd}) for available nodes (minimum ${lowest_price}/hour required)"
+        raise ValueError(error_msg)
+        
+    # Sort by price and available GPUs
+    suitable_nodes.sort(key=lambda x: (x["price"], -x["available_gpus"]))
+    selected_node = suitable_nodes[0]
+    logger.debug(f"Selected node: {selected_node}")
     
     return {
-        'cluster_name': selected_gpu['cluster_name'],
-        'node_name': selected_gpu['node_name'],
-        'gpu_count': str(requirements['gpu_count'])
+        "cluster_name": selected_node["cluster_name"],
+        "node_name": selected_node["node_name"],
+        "gpu_count": selected_node["gpu_count"]
     }
 
-def execute_video_edit(plan: VideoEditPlan, request: VideoEditRequest) -> str:
+def execute_video_edit(plan: VideoEditPlan, request: VideoEditRequest, local_mode: bool = False) -> str:
     """
-    Execute the video editing plan using selected GPU resources.
+    Execute the video editing plan using available GPU resources.
     
     Args:
-        plan (VideoEditPlan): The video editing plan to execute
-        request (VideoEditRequest): The original video editing request
-    
+        plan (VideoEditPlan): The editing plan to execute
+        request (VideoEditRequest): Original edit request
+        local_mode (bool): Whether to run locally without GPU selection
+        
     Returns:
         str: Path to the output video file
-    
+        
     Raises:
-        ValueError: If the plan or request is invalid
-        RuntimeError: If GPU resources cannot be allocated
-        FileNotFoundError: If input videos are not found
-        Exception: For other processing errors
+        RuntimeError: If GPU allocation fails or editing encounters an error
     """
-    # Validate inputs
-    if not plan.scenes:
-        raise ValueError("No scenes defined in the editing plan")
+    import logging
+    import time
+    import tempfile
+    import os
+    import json
+    import subprocess
+    from pathlib import Path
     
-    for video_path in request.video_paths:
-        if not os.path.exists(video_path):
-            raise FileNotFoundError(f"Input video not found: {video_path}")
-
-    # Create output directory if it doesn't exist
-    output_dir = os.path.dirname(request.output_path)
-    if output_dir:
-        os.makedirs(output_dir, exist_ok=True)
-
-    # Select and rent GPU
+    logger = logging.getLogger(__name__)
+    
+    instance = None
+    last_error = None
+    max_retries = 3
+    base_delay = 2  # Base delay in seconds
+    
     try:
-        gpu_selection = select_optimal_gpu(plan.estimated_gpu_requirements)
-        instance = rent_compute(
-            cluster_name=gpu_selection['cluster_name'],
-            node_name=gpu_selection['node_name'],
-            gpu_count=gpu_selection['gpu_count']
-        )
-    except Exception as e:
-        raise RuntimeError(f"Failed to allocate GPU resources: {str(e)}")
-
-    try:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            # Load all source videos
-            source_videos = []
-            for path in request.video_paths:
-                try:
-                    video = mp.VideoFileClip(path)
-                    source_videos.append(video)
-                except Exception as e:
-                    raise RuntimeError(f"Failed to load video {path}: {str(e)}")
+        if not local_mode:
+            # Get list of suitable GPUs
+            gpu_selection = select_optimal_gpu(plan.estimated_gpu_requirements)
             
-            # Process each scene
-            scene_clips = []
-            for scene in plan.scenes:
+            # Try each suitable node until one works or we run out of retries
+            for attempt in range(max_retries):
                 try:
-                    # Create clip segments for this scene
-                    clip_segments = []
-                    for clip_spec in scene.clips:
-                        # Extract and process the clip segment
-                        source = source_videos[clip_spec.source_index]
-                        segment = source.subclip(clip_spec.start_time, clip_spec.end_time)
-                        
-                        # Apply position and size
-                        pos = clip_spec.position
-                        segment = segment.resize(width=pos.width, height=pos.height)
-                        
-                        # Apply all video effects
-                        for effect in clip_spec.effects:
-                            segment = apply_video_effect(segment, effect)
-                        
-                        # Apply all audio effects
-                        for effect in clip_spec.audio_effects:
-                            segment = apply_audio_effect(segment, effect)
-                        
-                        clip_segments.append(segment)
+                    logger.info(f"Attempting to rent compute, attempt {attempt + 1}/{max_retries}")
+                    logger.info(f"Trying node: {gpu_selection}")
                     
-                    # Create scene composition
-                    scene_clip = mp.CompositeVideoClip(
-                        clip_segments,
-                        size=DEFAULT_RESOLUTION,
-                        bg_color=scene.background_color or "black"
+                    instance_response = rent_compute(
+                        cluster_name=gpu_selection['cluster_name'],
+                        node_name=gpu_selection['node_name'],
+                        gpu_count=str(int(plan.estimated_gpu_requirements['gpu_count']))
                     )
                     
-                    # Add captions
-                    for caption in scene.captions:
-                        txt_clip = create_caption_clip(caption)
-                        scene_clip = mp.CompositeVideoClip([scene_clip, txt_clip])
+                    # Parse instance details
+                    instance = json.loads(instance_response)
+                    instance_id = instance.get('instance_id')
+                    if not instance_id:
+                        raise ValueError("No instance_id in response")
                     
-                    # Add transitions
-                    if scene.transition_in:
-                        scene_clip = apply_transition_effect(scene_clip, scene.transition_in)
-                    if scene.transition_out:
-                        scene_clip = apply_transition_effect(scene_clip, scene.transition_out)
+                    logger.info(f"Successfully created instance: {instance_id}")
                     
-                    scene_clips.append(scene_clip)
-                
-                except Exception as e:
-                    raise RuntimeError(f"Failed to process scene: {str(e)}")
-            
-            try:
-                # Concatenate all scenes
-                final_clip = mp.concatenate_videoclips(scene_clips)
-                
-                # Write final output
-                final_clip.write_videofile(
-                    request.output_path,
-                    codec='libx264',
-                    audio_codec='aac',
-                    temp_audiofile=os.path.join(temp_dir, 'temp_audio.m4a'),
-                    remove_temp=True,
-                    threads=4,
-                    preset='medium'
-                )
-            except Exception as e:
-                raise RuntimeError(f"Failed to write output video: {str(e)}")
-            
-            finally:
-                # Clean up video clips
-                for clip in source_videos + scene_clips:
-                    try:
-                        clip.close()
-                    except:
-                        pass  # Ignore cleanup errors
+                    # Wait for instance to be ready
+                    max_wait = 300  # 5 minutes
+                    wait_start = time.time()
+                    while True:
+                        status_response = get_gpu_status()
+                        for gpu_instance in status_response.get('instances', []):
+                            if gpu_instance.get('id') == instance_id:
+                                if gpu_instance.get('status') == 'ready':
+                                    # Get SSH details
+                                    ssh_host = gpu_instance.get('ssh_host')
+                                    ssh_user = gpu_instance.get('ssh_user')
+                                    ssh_port = gpu_instance.get('ssh_port', 22)
+                                    if not all([ssh_host, ssh_user]):
+                                        raise ValueError("Missing SSH connection details")
+                                    break
+                        else:
+                            if time.time() - wait_start > max_wait:
+                                raise TimeoutError("Instance failed to become ready")
+                            time.sleep(5)
+                            continue
+                        break
+                    
+                    # Connect to instance via SSH
+                    ssh_result = connect_ssh(
+                        host=ssh_host,
+                        username=ssh_user,
+                        port=ssh_port
+                    )
+                    if "Error" in ssh_result:
+                        raise RuntimeError(f"SSH connection failed: {ssh_result}")
+                    
+                    # Install dependencies
+                    deps_commands = [
+                        "sudo apt-get update",
+                        "sudo apt-get install -y python3-pip ffmpeg",
+                        "pip3 install moviepy numpy torch opencv-python pillow",
+                    ]
+                    for cmd in deps_commands:
+                        result = execute_remote_command(cmd)
+                        if "Error" in result:
+                            raise RuntimeError(f"Failed to install dependencies: {result}")
+                    
+                    # Create work directory
+                    work_dir = "/tmp/video_edit"
+                    execute_remote_command(f"mkdir -p {work_dir}")
+                    
+                    # Transfer input videos
+                    for idx, video_path in enumerate(request.video_paths):
+                        remote_path = f"{work_dir}/input_{idx}.mp4"
+                        scp_cmd = f"scp -P {ssh_port} {video_path} {ssh_user}@{ssh_host}:{remote_path}"
+                        subprocess.run(scp_cmd, shell=True, check=True)
+                    
+                    # Create remote processing script
+                    script_content = """
+import moviepy.editor as mp
+import numpy as np
+import torch
+import cv2
+from PIL import Image, ImageDraw, ImageFont
+import json
+import sys
 
+# Constants
+DEFAULT_RESOLUTION = (1920, 1080)
+
+def apply_video_effect(clip, effect):
+    effect_functions = {
+        "blur": lambda clip, params: clip.fl_image(
+            lambda frame: cv2.GaussianBlur(
+                frame,
+                (int(params.get("radius", 1)) * 2 + 1,) * 2,
+                params.get("radius", 1)
+            )
+        ),
+        "color_adjust": lambda clip, params: clip.fl_image(
+            lambda frame: np.clip(
+                frame * np.array([
+                    params.get("r", 1.0),
+                    params.get("g", 1.0),
+                    params.get("b", 1.0)
+                ])[None, None, :],
+                0, 255
+            ).astype('uint8')
+        ),
+        "speed": lambda clip, params: clip.fx(speedx, params.get("factor", 1)),
+    }
+    
+    if effect.type not in effect_functions:
+        raise ValueError(f"Unsupported video effect: {effect.type}")
+    
+    try:
+        return effect_functions[effect.type](clip, effect.params)
     except Exception as e:
-        raise Exception(f"Video processing failed: {str(e)}")
+        raise RuntimeError(f"Failed to apply video effect {effect.type}: {str(e)}")
 
-    finally:
-        # Always cleanup GPU resources
-        if instance:
+def apply_audio_effect(clip, effect):
+    audio_effect_functions = {
+        "volume": lambda clip, params: clip.volumex(params.get("factor", 1)),
+        "fadeout": lambda clip, params: clip.audio_fadeout(params.get("duration", 1)),
+        "fadein": lambda clip, params: clip.audio_fadein(params.get("duration", 1)),
+    }
+    
+    if effect.type not in audio_effect_functions:
+        raise ValueError(f"Unsupported audio effect: {effect.type}")
+    
+    try:
+        return audio_effect_functions[effect.type](clip, effect.params)
+    except Exception as e:
+        raise RuntimeError(f"Failed to apply audio effect {effect.type}: {str(e)}")
+
+def create_caption_clip(caption):
+    try:
+        txt_clip = mp.TextClip(
+            caption.text,
+            fontsize=caption.style.get("size", 40),
+            color=caption.style.get("color", "white"),
+            method='label'
+        )
+        
+        pos = caption.position
+        if isinstance(pos.x, str):
+            x_pos = {"left": 0, "center": 0.5, "right": 1}[pos.x]
+        else:
+            x_pos = pos.x * DEFAULT_RESOLUTION[0]
+            
+        if isinstance(pos.y, str):
+            y_pos = {"top": 0, "center": 0.5, "bottom": 1}[pos.y]
+        else:
+            y_pos = pos.y * DEFAULT_RESOLUTION[1]
+        
+        txt_clip = txt_clip.set_position((x_pos, y_pos))
+        return txt_clip.set_duration(caption.end_time - caption.start_time)
+    
+    except Exception as e:
+        raise RuntimeError(f"Failed to create caption: {str(e)}")
+
+def apply_transition_effect(clip, transition):
+    transition_functions = {
+        "fade": lambda clip, params: clip.crossfadein(params.get("duration", 1)),
+        "wipe": lambda clip, params: create_wipe_transition(clip, params),
+    }
+    
+    if transition.type not in transition_functions:
+        raise ValueError(f"Unsupported transition effect: {transition.type}")
+    
+    try:
+        return transition_functions[transition.type](clip, transition.params)
+    except Exception as e:
+        raise RuntimeError(f"Failed to apply transition {transition.type}: {str(e)}")
+
+def create_wipe_transition(clip, params):
+    direction = params.get("direction", "left")
+    duration = params.get("duration", 1.0)
+    
+    if direction not in ["left", "right", "up", "down"]:
+        raise ValueError(f"Unsupported wipe direction: {direction}")
+    
+    try:
+        return clip.crossfadein(duration)
+    except Exception as e:
+        raise RuntimeError(f"Failed to create wipe transition: {str(e)}")
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--work_dir', required=True)
+    parser.add_argument('--output_path', required=True)
+    parser.add_argument('--plan_json', required=True)
+    parser.add_argument('--video_paths_json', required=True)
+    args = parser.parse_args()
+
+    # Load plan and video paths
+    with open(args.plan_json) as f:
+        plan = json.load(f)
+    with open(args.video_paths_json) as f:
+        video_paths = json.load(f)
+
+    # Load videos
+    source_clips = []
+    for i, _ in enumerate(video_paths):
+        clip = mp.VideoFileClip(f"{args.work_dir}/input_{i}.mp4")
+        source_clips.append(clip)
+
+    # Process scenes
+    final_clips = []
+    for scene in plan['scenes']:
+        scene_clips = []
+        for clip_segment in scene['clips']:
+            source_clip = source_clips[clip_segment['source_index']]
+            clip = source_clip.subclip(clip_segment['start_time'], clip_segment['end_time'])
+            
+            for effect in clip_segment.get('effects', []):
+                clip = apply_video_effect(clip, effect)
+            
+            for effect in clip_segment.get('audio_effects', []):
+                clip = apply_audio_effect(clip, effect)
+            
+            pos = clip_segment['position']
+            clip = clip.resize(width=pos['width'] * DEFAULT_RESOLUTION[0],
+                             height=pos['height'] * DEFAULT_RESOLUTION[1])
+            clip = clip.set_position((pos['x'] * DEFAULT_RESOLUTION[0],
+                                    pos['y'] * DEFAULT_RESOLUTION[1]))
+            scene_clips.append(clip)
+        
+        if len(scene_clips) > 1:
+            scene_clip = mp.CompositeVideoClip(scene_clips, size=DEFAULT_RESOLUTION)
+        else:
+            scene_clip = scene_clips[0]
+        
+        scene_clip = scene_clip.set_duration(scene['duration'])
+        
+        if scene.get('transition_in'):
+            scene_clip = apply_transition_effect(scene_clip, scene['transition_in'])
+        if scene.get('transition_out'):
+            scene_clip = apply_transition_effect(scene_clip, scene['transition_out'])
+        
+        caption_clips = []
+        for caption in scene.get('captions', []):
+            txt_clip = create_caption_clip(caption)
+            caption_clips.append(txt_clip)
+        
+        if caption_clips:
+            scene_clip = mp.CompositeVideoClip([scene_clip] + caption_clips)
+        
+        final_clips.append(scene_clip)
+
+    # Concatenate all scenes
+    final_video = mp.concatenate_videoclips(final_clips)
+
+    # Write output file
+    final_video.write_videofile(args.output_path)
+
+    # Clean up
+    final_video.close()
+    for clip in source_clips:
+        clip.close()
+"""
+                    remote_script = f"{work_dir}/process.py"
+                    with tempfile.NamedTemporaryFile(mode='w', suffix='.py') as f:
+                        f.write(script_content)
+                        f.flush()
+                        scp_cmd = f"scp -P {ssh_port} {f.name} {ssh_user}@{ssh_host}:{remote_script}"
+                        subprocess.run(scp_cmd, shell=True, check=True)
+                    
+                    # Create plan and video paths JSON files
+                    plan_json = f"{work_dir}/plan.json"
+                    video_paths_json = f"{work_dir}/video_paths.json"
+                    
+                    # Write plan JSON
+                    plan_dict = {
+                        "scenes": [scene.dict() for scene in plan.scenes]
+                    }
+                    with tempfile.NamedTemporaryFile(mode='w', suffix='.json') as f:
+                        json.dump(plan_dict, f)
+                        f.flush()
+                        scp_cmd = f"scp -P {ssh_port} {f.name} {ssh_user}@{ssh_host}:{plan_json}"
+                        subprocess.run(scp_cmd, shell=True, check=True)
+                    
+                    # Write video paths JSON
+                    with tempfile.NamedTemporaryFile(mode='w', suffix='.json') as f:
+                        json.dump(request.video_paths, f)
+                        f.flush()
+                        scp_cmd = f"scp -P {ssh_port} {f.name} {ssh_user}@{ssh_host}:{video_paths_json}"
+                        subprocess.run(scp_cmd, shell=True, check=True)
+                    
+                    # Run processing
+                    remote_output = f"{work_dir}/output.mp4"
+                    cmd = f"python3 {remote_script} --work_dir {work_dir} --output_path {remote_output} --plan_json {plan_json} --video_paths_json {video_paths_json}"
+                    result = execute_remote_command(cmd)
+                    if "Error" in result:
+                        raise RuntimeError(f"Video processing failed: {result}")
+                    
+                    # Transfer output back
+                    scp_cmd = f"scp -P {ssh_port} {ssh_user}@{ssh_host}:{remote_output} {request.output_path}"
+                    subprocess.run(scp_cmd, shell=True, check=True)
+                    
+                    # Clean up remote files
+                    execute_remote_command(f"rm -rf {work_dir}")
+                    
+                    return request.output_path
+                    
+                except Exception as e:
+                    last_error = e
+                    logger.error(f"Failed to process video on attempt {attempt + 1}: {str(e)}")
+                    
+                    # Exponential backoff before next attempt
+                    if attempt < max_retries - 1:  # Don't sleep after last attempt
+                        delay = base_delay * (2 ** attempt)  # Exponential backoff
+                        logger.info(f"Waiting {delay} seconds before next attempt...")
+                        time.sleep(delay)
+            
+            if not local_mode:
+                error_msg = f"Failed to process video after {max_retries} attempts."
+                if last_error:
+                    error_msg += f" Last error: {str(last_error)}"
+                raise RuntimeError(error_msg)
+
+        # Local mode processing
+        source_clips = []
+        for video_path in request.video_paths:
             try:
-                terminate_compute(instance["instance_id"])
+                clip = mp.VideoFileClip(video_path)
+                source_clips.append(clip)
             except Exception as e:
-                print(f"Warning: Failed to cleanup GPU resources: {str(e)}")
+                raise RuntimeError(f"Failed to load video {video_path}: {str(e)}")
 
-    return f"Video processing completed. Output saved to: {request.output_path}"
+        # Process each scene
+        final_clips = []
+        for scene in plan.scenes:
+            # Process clips in the scene
+            scene_clips = []
+            for clip_segment in scene.clips:
+                # Get source clip
+                source_clip = source_clips[clip_segment.source_index]
+                
+                # Cut the segment
+                clip = source_clip.subclip(clip_segment.start_time, clip_segment.end_time)
+                
+                # Apply video effects
+                for effect in clip_segment.effects:
+                    clip = apply_video_effect(clip, effect)
+                
+                # Apply audio effects
+                for effect in clip_segment.audio_effects:
+                    clip = apply_audio_effect(clip, effect)
+                
+                # Position the clip
+                pos = clip_segment.position
+                clip = clip.resize(width=pos.width * DEFAULT_RESOLUTION[0], 
+                                 height=pos.height * DEFAULT_RESOLUTION[1])
+                clip = clip.set_position((pos.x * DEFAULT_RESOLUTION[0], 
+                                        pos.y * DEFAULT_RESOLUTION[1]))
+                
+                scene_clips.append(clip)
+            
+            # Composite scene clips
+            if len(scene_clips) > 1:
+                scene_clip = mp.CompositeVideoClip(scene_clips, 
+                                                 size=DEFAULT_RESOLUTION)
+            else:
+                scene_clip = scene_clips[0]
+            
+            # Apply scene duration
+            scene_clip = scene_clip.set_duration(scene.duration)
+            
+            # Apply transitions
+            if scene.transition_in:
+                scene_clip = apply_transition_effect(scene_clip, scene.transition_in)
+            if scene.transition_out:
+                scene_clip = apply_transition_effect(scene_clip, scene.transition_out)
+            
+            # Add captions
+            caption_clips = []
+            for caption in scene.captions:
+                try:
+                    txt_clip = create_caption_clip(caption)
+                    caption_clips.append(txt_clip)
+                except Exception as e:
+                    logger.warning(f"Failed to create caption: {str(e)}")
+            
+            if caption_clips:
+                scene_clip = mp.CompositeVideoClip([scene_clip] + caption_clips)
+            
+            final_clips.append(scene_clip)
+        
+        # Concatenate all scenes
+        final_video = mp.concatenate_videoclips(final_clips)
+        
+        # Write output file
+        final_video.write_videofile(request.output_path)
+        
+        # Clean up
+        final_video.close()
+        for clip in source_clips:
+            clip.close()
+        
+        return request.output_path
+        
+    except Exception as e:
+        raise RuntimeError(f"Failed to execute video edit: {str(e)}")
+    finally:
+        # Clean up instance if it was created
+        if instance and not local_mode:
+            try:
+                terminate_compute(instance.get('instance_id'))
+            except Exception as e:
+                logger.error(f"Failed to clean up instance: {str(e)}")
 
 def apply_video_effect(clip: mp.VideoClip, effect: VideoEffect) -> mp.VideoClip:
     """
@@ -577,9 +964,23 @@ def apply_video_effect(clip: mp.VideoClip, effect: VideoEffect) -> mp.VideoClip:
         ValueError: If the effect type is not supported
     """
     effect_functions = {
-        "blur": lambda clip, params: clip.fx(mp.vfx.blur, params.get("radius", 1)),
-        "color_adjust": lambda clip, params: clip.fx(colorx, 
-            params.get("r", 1), params.get("g", 1), params.get("b", 1)),
+        "blur": lambda clip, params: clip.fl_image(
+            lambda frame: cv2.GaussianBlur(
+                frame,
+                (int(params.get("radius", 1)) * 2 + 1,) * 2,
+                params.get("radius", 1)
+            )
+        ),
+        "color_adjust": lambda clip, params: clip.fl_image(
+            lambda frame: np.clip(
+                frame * np.array([
+                    params.get("r", 1.0),
+                    params.get("g", 1.0),
+                    params.get("b", 1.0)
+                ])[None, None, :],
+                0, 255
+            ).astype('uint8')
+        ),
         "speed": lambda clip, params: clip.fx(speedx, params.get("factor", 1)),
     }
     
@@ -633,13 +1034,12 @@ def create_caption_clip(caption: Caption) -> mp.TextClip:
         RuntimeError: If the caption creation fails
     """
     try:
+        # Create a simple text clip without ImageMagick
         txt_clip = mp.TextClip(
             caption.text,
-            font=caption.style.get("font", "Arial"),
             fontsize=caption.style.get("size", 40),
             color=caption.style.get("color", "white"),
-            bg_color=caption.style.get("bg_color", "rgba(0,0,0,0.5)"),
-            method='caption'
+            method='label'  # Use label method instead of caption
         )
         
         # Position the caption
@@ -737,8 +1137,10 @@ def create_video_editing_tools() -> List[Tool]:
             Tool(
                 name="execute_video_edit",
                 description="Execute a video editing plan using Hyperbolic GPU resources",
-                func=lambda x: execute_video_edit(VideoEditPlan(**json.loads(x["plan"])), 
-                                                VideoEditRequest(**json.loads(x["request"]))),
+                func=lambda x: execute_video_edit(
+                    VideoEditPlan(**json.loads(x["plan"])), 
+                    VideoEditRequest(**json.loads(x["request"]))
+                ),
                 args_schema=dict
             )
         ]

@@ -182,7 +182,7 @@ def loadCharacters(charactersArg: str) -> List[Dict[str, Any]]:
 
     if not characterPaths:
         # Load default chainyoda character
-        default_path = os.path.join(os.path.dirname(__file__), "characters/default.json")
+        default_path = os.path.join(os.path.dirname(__file__), "characters/chainyoda.json")
         characterPaths.append(default_path)
 
     for characterPath in characterPaths:
