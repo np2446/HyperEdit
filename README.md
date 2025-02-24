@@ -1,4 +1,41 @@
-# Hyperbolic's Agent Framework
+# Hyperbolic's Agent Framework - Video Editing Extension
+
+This repository is a fork of the [Hyperbolic AgentKit](https://github.com/HyperbolicLabs/Hyperbolic-AgentKit), extended with GPU-accelerated video editing capabilities for the Hyperbolic x Eigenlayer Hackathon. Our extension demonstrates how to build hyperintelligent AI agents that can perform complex video processing tasks using Hyperbolic's decentralized GPU marketplace.
+
+## Video Editing Agent Extension
+
+We've extended the base AgentKit with an intelligent video editing agent that leverages Hyperbolic's GPU marketplace for efficient video processing. Our agent can:
+
+- Create dynamic split-screen comparisons using parallel GPU processing
+- Apply complex video and audio effects with GPU acceleration
+- Manage multi-scene compositions with intelligent resource allocation
+- Generate and overlay captions using AI models
+- Automatically scale processing across available GPU resources
+- Adapt processing strategies based on video complexity and available compute
+
+### Video Processing Setup
+
+After following the main AgentKit installation steps with Poetry (see [Installation Steps](#installation-steps)), you'll need:
+
+1. **Install FFmpeg** (required for video processing)
+   ```bash
+   # On macOS
+   brew install ffmpeg
+
+   # On Ubuntu/Debian
+   sudo apt update
+   sudo apt install ffmpeg
+   ```
+
+2. **Verify Installation**
+   ```bash
+   # Run the video editing tests
+   poetry run python -m unittest test_video_editing.py
+   ```
+
+The agent will automatically handle GPU resource management and scaling through Hyperbolic's marketplace.
+
+## Original AgentKit Features
 
 This repository is inspired by and modified from Coinbase's [CDP Agentkit](https://github.com/coinbase/cdp-agentkit). We extend our gratitude to the Coinbase Developer Platform team for their original work.
 For the voice agent, we extend the work of [langchain-ai/react-voice-agent](https://github.com/langchain-ai/react-voice-agent).
