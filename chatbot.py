@@ -385,7 +385,7 @@ def create_agent_tools(llm, knowledge_base, podcast_knowledge_base, agent_kit, c
     # Add video editing tools if enabled
     if os.getenv("USE_VIDEO_TOOLS", "true").lower() == "true":
         print_system("Adding video editing tools...")
-        from video_agent.video_tools import create_video_editing_tools
+        from video_agent.agent_tools import create_video_editing_tools
         video_tools = create_video_editing_tools()
         tools.extend(video_tools)
         print_system(f"Added {len(video_tools)} video editing tools")
