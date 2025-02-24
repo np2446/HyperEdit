@@ -17,7 +17,14 @@ We've extended the base AgentKit with an intelligent video editing agent that le
 
 After following the main AgentKit installation steps with Poetry (see [Installation Steps](#installation-steps)), you'll need:
 
-1. **Install FFmpeg** (required for video processing)
+1. **Configure Hyperbolic Access** (required for GPU processing)
+   ```bash
+   # Add to your .env file:
+   HYPERBOLIC_API_KEY=your_api_key_here
+   ```
+   Get your API key from the [Hyperbolic Portal](https://app.hyperbolic.xyz)
+
+2. **Install FFmpeg** (required for local processing fallback)
    ```bash
    # On macOS
    brew install ffmpeg
@@ -27,13 +34,123 @@ After following the main AgentKit installation steps with Poetry (see [Installat
    sudo apt install ffmpeg
    ```
 
-2. **Verify Installation**
+3. **Install OpenCV Dependencies** (required for test video generation)
    ```bash
-   # Run the video editing tests
-   poetry run python -m unittest test_video_editing.py
+   # On macOS
+   brew install opencv
+
+   # On Ubuntu/Debian
+   sudo apt install python3-opencv
    ```
 
-The agent will automatically handle GPU resource management and scaling through Hyperbolic's marketplace.
+4. **Run Demo**
+   ```bash
+   # Run the video agent demo
+   poetry run python demo_video_agent.py
+   ```
+
+The demo will:
+1. Generate test videos with different patterns and color schemes in the `input_videos` directory:
+   - `circles_warm.mp4`: Warm-colored moving circles
+   - `rectangles_cool.mp4`: Cool-colored rotating rectangles
+   - `waves_grayscale.mp4`: Grayscale wave patterns
+   - `particles_random.mp4`: Random colored particle effects
+
+2. Process a split-screen comparison video that demonstrates:
+   - Side-by-side video layout
+   - Title caption overlay
+   - Blur effects
+   - Fade transitions
+   - Proper scaling and positioning
+
+3. Output the processed video to `test_outputs/warm_cool_comparison.mp4`
+
+### Using the Video Agent
+
+The video agent can be used in two ways:
+
+1. **Direct API Usage**
+   ```python
+   from video_agent import VideoTool, VideoProcessor
+   from langchain_anthropic import ChatAnthropic
+
+   # Initialize the video tool with Hyperbolic GPU processing
+   llm = ChatAnthropic(model="claude-3-5-sonnet-20241022")
+   video_tool = VideoTool(
+       llm=llm,
+       processor=VideoProcessor()  # Uses Hyperbolic by default
+   )
+
+   # For local processing (fallback mode)
+   video_tool = VideoTool(
+       llm=llm,
+       processor=VideoProcessor(local_mode=True)
+   )
+
+   # Process a video editing request
+   result = await video_tool._arun(
+       "Create a split-screen comparison of video1.mp4 and video2.mp4"
+   )
+   ```
+
+2. **Through AgentKit**
+   ```python
+   # In your agent configuration
+   from video_agent import VideoToolkit
+   video_toolkit = VideoToolkit.from_llm(llm)  # Uses Hyperbolic by default
+   tools.extend(video_toolkit.get_tools())
+   ```
+
+### Supported Features
+
+1. **Video Effects** (GPU-accelerated)
+   - Blur (adjustable strength)
+   - Sharpen
+   - Color adjustments (contrast, saturation, brightness)
+   - Speed modification
+   - Video stabilization
+
+2. **Transitions** (GPU-accelerated)
+   - Fade
+   - Dissolve
+   - Custom duration control
+
+3. **Compositions** (GPU-accelerated)
+   - Split-screen layouts
+   - Picture-in-picture
+   - Multi-scene sequences
+   - Custom positioning and scaling
+
+4. **Text and Captions**
+   - Title overlays
+   - Custom font styles
+   - Position control
+   - Fade animations
+
+5. **GPU Acceleration**
+   - Automatic GPU requirement estimation
+   - Dynamic GPU selection based on task complexity
+   - Multi-GPU support for parallel processing
+   - Automatic resource scaling
+   - Fallback to local processing if needed
+
+### Environment Configuration
+
+Add these variables to your `.env` file:
+```bash
+# Required: Hyperbolic API key for GPU processing
+HYPERBOLIC_API_KEY=your_api_key_here
+
+# Optional: Force local processing mode (not recommended for complex tasks)
+USE_LOCAL_PROCESSING=false
+
+# Optional: Configure GPU preferences
+PREFERRED_GPU_MODEL=A4000  # Optional: Specify preferred GPU model
+MIN_VRAM_GB=8.0           # Optional: Minimum VRAM requirement
+GPU_COUNT=1               # Optional: Number of GPUs to use
+```
+
+The video agent will automatically select and manage GPU resources through Hyperbolic's marketplace based on your task requirements. Local processing mode is available as a fallback but is not recommended for complex video processing tasks.
 
 ## Original AgentKit Features
 

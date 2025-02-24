@@ -1,12 +1,12 @@
 """
-GPU-accelerated video processing using Hyperbolic's compute infrastructure.
-This module provides high-level video processing capabilities while efficiently
-managing GPU resources through Hyperbolic's marketplace.
+GPU-accelerated video processing using either local ffmpeg or Hyperbolic's compute infrastructure.
+This module provides high-level video processing capabilities with flexible execution options.
 """
 
 import json
 import os
 import time
+import tempfile
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -19,8 +19,9 @@ from hyperbolic_agentkit_core.actions.remote_shell import execute_remote_command
 from hyperbolic_agentkit_core.actions.terminate_compute import terminate_compute
 from hyperbolic_agentkit_core.actions.ssh_access import connect_ssh
 
-from .video_models import VideoEditPlan, VideoEditRequest
+from .video_models import VideoEditPlan, VideoEditRequest, TransitionType, Scene
 from .scene_processor import SceneProcessor
+from .local_scene_processor import LocalSceneProcessor
 from .file_transfer import FileTransfer
 
 class GPURequirements(BaseModel):
@@ -30,22 +31,34 @@ class GPURequirements(BaseModel):
     preferred_gpu_model: Optional[str] = None
 
 class VideoProcessor:
-    """Manages GPU-accelerated video processing using Hyperbolic's infrastructure."""
+    """Manages video processing using either local ffmpeg or Hyperbolic's infrastructure."""
     
-    def __init__(self):
+    def __init__(self, local_mode: bool = False):
+        """Initialize video processor.
+        
+        Args:
+            local_mode: Whether to process videos locally using ffmpeg (True) or use Hyperbolic's GPUs (False)
+        """
+        self.local_mode = local_mode
         self.current_instance: Optional[Dict] = None
         self.instance_id: Optional[str] = None
-        self.workspace_dir = "/workspace"
+        self.workspace_dir = "/workspace" if not local_mode else tempfile.mkdtemp(prefix="video_processor_")
         self.file_transfer: Optional[FileTransfer] = None
         self.scene_processor: Optional[SceneProcessor] = None
-        
+        self.local_processor: Optional[LocalSceneProcessor] = None
+    
     def setup_gpu_environment(self, requirements: GPURequirements) -> None:
-        """Set up GPU environment based on video requirements.
+        """Set up processing environment based on mode and requirements.
         
         Args:
             requirements: GPU requirements for the video processing task
         """
-        # Get available GPUs
+        if self.local_mode:
+            # For local mode, just set up the workspace
+            self.local_processor = LocalSceneProcessor(self.workspace_dir)
+            return
+        
+        # Remote mode - set up GPU environment
         gpu_info = json.loads(get_available_gpus())
         
         # Select optimal GPU based on requirements
@@ -72,7 +85,7 @@ class VideoProcessor:
         
         # Set up the environment
         self._setup_environment()
-        
+    
     def _select_gpu(self, available_gpus: Dict, requirements: GPURequirements) -> Optional[Dict]:
         """Select the optimal GPU instance based on requirements."""
         best_match = None
@@ -135,6 +148,9 @@ class VideoProcessor:
     
     def _wait_for_instance_ready(self, timeout: int = 300, check_interval: int = 5) -> None:
         """Wait for GPU instance to be ready."""
+        if self.local_mode:
+            return
+            
         start_time = time.time()
         while True:
             if time.time() - start_time > timeout:
@@ -152,6 +168,9 @@ class VideoProcessor:
     
     def _setup_environment(self) -> None:
         """Install required packages and setup workspace on GPU instance."""
+        if self.local_mode:
+            return
+            
         setup_commands = [
             # Update package lists
             "apt-get update",
@@ -176,7 +195,7 @@ class VideoProcessor:
                 raise RuntimeError(f"Failed to setup environment: {result}")
     
     def process_video(self, edit_plan: VideoEditPlan, request: VideoEditRequest) -> str:
-        """Execute video processing on GPU.
+        """Execute video processing.
         
         Args:
             edit_plan: The video editing plan to execute
@@ -185,48 +204,146 @@ class VideoProcessor:
         Returns:
             str: Path to the processed output video
         """
-        if not self.current_instance or not self.file_transfer or not self.scene_processor:
-            raise RuntimeError("GPU environment not set up. Call setup_gpu_environment first.")
-        
-        try:
-            # Upload source videos
-            remote_paths = []
-            for i, path in enumerate(request.video_paths):
-                remote_path = f"{self.workspace_dir}/source_{i}{Path(path).suffix}"
-                self.file_transfer.upload_file(path, remote_path)
-                remote_paths.append(remote_path)
+        if self.local_mode:
+            if not self.local_processor:
+                raise RuntimeError("Local processor not initialized. Call setup_gpu_environment first.")
             
             # Process each scene
             scene_outputs = []
             for i, scene in enumerate(edit_plan.scenes):
-                output_path = f"{self.workspace_dir}/scene_{i}.mp4"
-                self.scene_processor.process_scene(scene, remote_paths, output_path)
+                output_path = os.path.join(self.workspace_dir, f"scene_{i}.mp4")
+                self.local_processor.process_scene(scene, request.video_paths, output_path)
                 scene_outputs.append(output_path)
             
-            # Concatenate scenes if multiple
+            # Apply transitions between scenes
             if len(scene_outputs) > 1:
-                final_remote_path = f"{self.workspace_dir}/final.mp4"
-                self.scene_processor._concatenate_scenes(scene_outputs, final_remote_path)
+                final_path = os.path.join(self.workspace_dir, "final.mp4")
+                self._apply_transitions(scene_outputs, edit_plan.scenes, final_path)
+                os.replace(final_path, request.output_path)
             else:
-                final_remote_path = scene_outputs[0]
-            
-            # Download result
-            self.file_transfer.download_file(final_remote_path, request.output_path)
+                os.replace(scene_outputs[0], request.output_path)
             
             return request.output_path
             
-        except Exception as e:
-            raise RuntimeError(f"Video processing failed: {str(e)}")
+        else:
+            if not self.current_instance or not self.file_transfer or not self.scene_processor:
+                raise RuntimeError("GPU environment not set up. Call setup_gpu_environment first.")
+            
+            try:
+                # Upload source videos
+                remote_paths = []
+                for i, path in enumerate(request.video_paths):
+                    remote_path = f"{self.workspace_dir}/source_{i}{Path(path).suffix}"
+                    self.file_transfer.upload_file(path, remote_path)
+                    remote_paths.append(remote_path)
+                
+                # Process each scene
+                scene_outputs = []
+                for i, scene in enumerate(edit_plan.scenes):
+                    output_path = f"{self.workspace_dir}/scene_{i}.mp4"
+                    self.scene_processor.process_scene(scene, remote_paths, output_path)
+                    scene_outputs.append(output_path)
+                
+                # Apply transitions between scenes
+                if len(scene_outputs) > 1:
+                    final_remote_path = f"{self.workspace_dir}/final.mp4"
+                    self._apply_transitions(scene_outputs, edit_plan.scenes, final_remote_path)
+                else:
+                    final_remote_path = scene_outputs[0]
+                
+                # Download result
+                self.file_transfer.download_file(final_remote_path, request.output_path)
+                
+                return request.output_path
+                
+            except Exception as e:
+                raise RuntimeError(f"Video processing failed: {str(e)}")
+    
+    def _apply_transitions(self, scene_outputs: List[str], scenes: List[Scene], output_path: str) -> None:
+        """Apply transitions between scenes.
+        
+        Args:
+            scene_outputs: List of processed scene video paths
+            scenes: List of scenes with transition information
+            output_path: Path to save the final video
+        """
+        # Create filter complex for transitions
+        filter_complex = []
+        inputs = []
+        
+        # Add input files
+        for i, scene_path in enumerate(scene_outputs):
+            inputs.append(f"-i {scene_path}")
+        
+        # Create transitions
+        for i in range(len(scenes)):
+            if i == 0:
+                # First scene
+                filter_complex.append(f"[0]format=yuv420p[v0]")
+                last_output = "v0"
+            else:
+                # Get transition info
+                prev_scene = scenes[i-1]
+                curr_scene = scenes[i]
+                
+                # Default to fade if no transition specified
+                transition_type = (
+                    prev_scene.transition_out.type if prev_scene.transition_out
+                    else curr_scene.transition_in.type if curr_scene.transition_in
+                    else TransitionType.FADE
+                )
+                
+                # Get transition duration
+                duration = (
+                    prev_scene.transition_out.duration if prev_scene.transition_out
+                    else curr_scene.transition_in.duration if curr_scene.transition_in
+                    else 1.0
+                )
+                
+                # Add transition
+                if transition_type == TransitionType.FADE:
+                    filter_complex.append(
+                        f"[{i}]format=yuv420p[v{i}];"
+                        f"[{last_output}][v{i}]xfade=transition=fade:duration={duration}:offset={i*5-duration}[vt{i}]"
+                    )
+                    last_output = f"vt{i}"
+                else:
+                    # For other transition types, just concatenate for now
+                    filter_complex.append(
+                        f"[{i}]format=yuv420p[v{i}];"
+                        f"[{last_output}][v{i}]concat=n=2:v=1:a=0[vt{i}]"
+                    )
+                    last_output = f"vt{i}"
+        
+        # Build and execute ffmpeg command
+        filter_str = ';'.join(filter_complex)
+        cmd = (
+            f"ffmpeg {' '.join(inputs)} "
+            f"-filter_complex '{filter_str}' "
+            f"-map '[{last_output}]' "
+            f"-c:v libx264 -preset medium {output_path}"
+        )
+        
+        if self.local_mode:
+            self.local_processor._run_command(cmd)
+        else:
+            execute_remote_command(self.instance_id, cmd)
     
     def cleanup(self) -> None:
-        """Release GPU resources and clean up temporary files."""
-        if self.instance_id:
-            try:
-                terminate_compute(self.instance_id)
-            except Exception as e:
-                print(f"Warning: Failed to terminate instance {self.instance_id}: {str(e)}")
-            finally:
-                self.instance_id = None
-                self.current_instance = None
-                self.file_transfer = None
-                self.scene_processor = None 
+        """Release resources and clean up temporary files."""
+        if self.local_mode:
+            if os.path.exists(self.workspace_dir):
+                import shutil
+                shutil.rmtree(self.workspace_dir)
+            self.local_processor = None
+        else:
+            if self.instance_id:
+                try:
+                    terminate_compute(self.instance_id)
+                except Exception as e:
+                    print(f"Warning: Failed to terminate instance {self.instance_id}: {str(e)}")
+                finally:
+                    self.instance_id = None
+                    self.current_instance = None
+                    self.file_transfer = None
+                    self.scene_processor = None 

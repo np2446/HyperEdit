@@ -280,6 +280,11 @@ def create_agent_tools(llm, knowledge_base, podcast_knowledge_base, agent_kit, c
     """Create and return a list of tools for the agent to use."""
     tools = []
 
+    # Add video processing tools
+    from video_agent import VideoToolkit
+    video_toolkit = VideoToolkit.from_llm(llm)
+    tools.extend(video_toolkit.get_tools())
+
     # Add browser toolkit if enabled
     if os.getenv("USE_BROWSER_TOOLS", "true").lower() == "true":
         browser_toolkit = BrowserToolkit.from_llm(llm)
