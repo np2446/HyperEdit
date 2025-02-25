@@ -325,14 +325,32 @@ async def run_video_agent_demo():
         tags=None  # Disable LangSmith tags
     )
     
-    # Initialize video tool with local mode
+    # Check if we should use local or remote processing
+    use_local = os.environ.get("USE_LOCAL_PROCESSING", "false").lower() == "true"
+    print(f"Using {'local' if use_local else 'remote'} processing mode")
+    
+    # Initialize video tool
     video_tool = VideoTool(
         llm=llm,
-        processor=VideoProcessor(local_mode=True)
+        processor=VideoProcessor(local_mode=use_local)
     )
     
-    # Initialize GPU environment
-    video_tool.processor.setup_gpu_environment(GPURequirements(min_vram_gb=4.0))
+    # Initialize GPU environment with affordable options
+    if not use_local:
+        video_tool.processor.setup_gpu_environment(
+            GPURequirements(
+                gpu_type="RTX",  # Prefer RTX GPUs which are typically cheaper
+                num_gpus=1,
+                min_vram_gb=4.0,
+                disk_size=10,
+                memory=16
+            )
+        )
+    else:
+        # For local mode, just set up basic requirements
+        video_tool.processor.setup_gpu_environment(
+            GPURequirements(min_vram_gb=4.0)
+        )
     
     # Create runnable config with callbacks disabled
     runnable_config = RunnableConfig(

@@ -311,6 +311,11 @@ The `template.json` file allows you to customize your AI agent's personality and
   - Ensure you have an RSA key at `~/.ssh/id_rsa` or configure `SSH_PRIVATE_KEY_PATH`
     - Only RSA keys are supported for now
     - In order to generate an RSA key, run `ssh-keygen -t rsa -b 4096 -C "your_email@example.com"`
+  - Additional SSH configuration options via environment variables:
+    - `DEFAULT_SSH_KEY_PATH`: Default path to use if `SSH_PRIVATE_KEY_PATH` is not set
+    - `SSH_KEY_PASSWORD`: Password for your SSH key if it's password-protected
+    - `SSH_PASSWORD_KEY_PATH`: Path to a specific password-protected key that matches `SSH_KEY_PASSWORD` 
+    - `ALTERNATIVE_SSH_KEYS`: Comma-separated list of alternative key names to try if primary key isn't found (e.g., `id_rsa,id_ed25519,hyperbolic_key`)
 
 ## Running the Application
 
