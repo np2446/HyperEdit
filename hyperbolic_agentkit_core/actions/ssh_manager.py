@@ -3,6 +3,7 @@ import os
 import time
 from typing import Optional, List, Dict, Any
 import logging
+import socket
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -190,26 +191,101 @@ class SSHManager:
         return alternative_keys
 
     def execute(self, command: str, timeout: int = 60) -> str:
-        """Execute command on connected server with timeout."""
-        if not self.is_connected:
-            return "Error: No active SSH connection. Please connect first."
-
-        try:
-            logger.info(f"Executing command: {command}")
-            stdin, stdout, stderr = self._ssh_client.exec_command(command, timeout=timeout)
-            output = stdout.read().decode()
-            error = stderr.read().decode()
-
-            if error:
-                logger.warning(f"Command produced error: {error}")
-                return f"Error: {error}\nOutput: {output}"
+        """Execute a command on the remote server.
+        
+        Args:
+            command: Shell command to execute
+            timeout: Command timeout in seconds
             
-            logger.info(f"Command executed successfully")
-            return output
-
+        Returns:
+            str: Command output or error message
+        """
+        if not self._ssh_client or not self.is_connected:
+            return "Error: No active SSH connection"
+        
+        try:
+            logger.info(f"Executing command with timeout {timeout}s: {command}")
+            
+            # Create a channel for command execution
+            transport = self._ssh_client.get_transport()
+            if not transport:
+                return "Error: SSH transport not available"
+            
+            channel = transport.open_session()
+            channel.settimeout(timeout)
+            
+            # Execute the command
+            channel.exec_command(command)
+            
+            # Read output with timeout handling
+            stdout_data = b""
+            stderr_data = b""
+            
+            # Set channel to non-blocking mode
+            channel.setblocking(0)
+            
+            # Wait for command to complete with timeout
+            start_time = time.time()
+            while not channel.exit_status_ready():
+                # Check if we've exceeded the timeout
+                if time.time() - start_time > timeout:
+                    channel.close()
+                    return f"Error: Command timed out after {timeout} seconds"
+                
+                # Try to read data if available
+                if channel.recv_ready():
+                    chunk = channel.recv(4096)
+                    if not chunk:
+                        break
+                    stdout_data += chunk
+                
+                if channel.recv_stderr_ready():
+                    chunk = channel.recv_stderr(4096)
+                    if not chunk:
+                        break
+                    stderr_data += chunk
+                
+                # Sleep briefly to avoid CPU spinning
+                time.sleep(0.1)
+            
+            # Read any remaining data
+            while channel.recv_ready():
+                chunk = channel.recv(4096)
+                if not chunk:
+                    break
+                stdout_data += chunk
+            
+            while channel.recv_stderr_ready():
+                chunk = channel.recv_stderr(4096)
+                if not chunk:
+                    break
+                stderr_data += chunk
+            
+            # Get exit status
+            exit_status = channel.recv_exit_status()
+            
+            # Close the channel
+            channel.close()
+            
+            # Decode output
+            stdout = stdout_data.decode('utf-8', errors='replace')
+            stderr = stderr_data.decode('utf-8', errors='replace')
+            
+            # Return combined output or error
+            if exit_status != 0:
+                logger.warning(f"Command failed with exit status {exit_status}")
+                if stderr:
+                    return f"SSH Command Error (status {exit_status}): {stderr}\nOutput: {stdout}"
+                else:
+                    return f"SSH Command Error (status {exit_status}): {stdout}"
+            
+            return stdout
+            
+        except socket.timeout:
+            logger.error(f"Command timed out after {timeout} seconds: {command}")
+            return f"Error: Command timed out after {timeout} seconds"
         except Exception as e:
-            logger.error(f"SSH Command Error: {str(e)}")
-            self._connected = False
+            logger.error(f"Error executing command: {str(e)}")
             return f"SSH Command Error: {str(e)}"
 
     def disconnect(self):

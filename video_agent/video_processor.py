@@ -90,11 +90,28 @@ class VideoProcessor:
             for instance_id in list(cls.active_instances):
                 try:
                     print(f"Terminating instance {instance_id}...")
+                    # First try to gracefully disconnect SSH
+                    if ssh_manager.is_connected:
+                        try:
+                            print("Disconnecting SSH session")
+                            ssh_manager.disconnect()
+                            print("SSH session disconnected")
+                        except Exception as ssh_err:
+                            print(f"Warning: Error disconnecting SSH: {str(ssh_err)}")
+                    
+                    # Then terminate the instance
                     terminate_compute(instance_id)
                     cls.active_instances.remove(instance_id)
                     print(f"Instance {instance_id} terminated successfully.")
                 except Exception as e:
-                    print(f"Error terminating instance {instance_id}: {str(e)}")
+                    print(f"Warning: Error terminating instance {instance_id}: {str(e)}")
+                    # Even if termination fails, remove from active instances to avoid repeated attempts
+                    if instance_id in cls.active_instances:
+                        cls.active_instances.remove(instance_id)
+                    
+                    # If the error indicates the instance doesn't exist, it's already terminated
+                    if "not found" in str(e).lower():
+                        print(f"Instance {instance_id} appears to be already terminated.")
     
     def setup_gpu_environment(self, requirements: GPURequirements) -> None:
         """Set up processing environment based on mode and requirements.
@@ -330,14 +347,19 @@ class VideoProcessor:
         print(f"Waiting {initial_wait}s before attempting first SSH connection...")
         time.sleep(initial_wait)
         
-        # Get SSH key path from environment variable or try multiple options
-        ssh_key_path = self._find_ssh_key()
+        # Get SSH key path from environment variable
+        ssh_key_path = os.environ.get('SSH_PRIVATE_KEY_PATH')
+        if not ssh_key_path:
+            raise ValueError("SSH_PRIVATE_KEY_PATH environment variable is required but not set")
+        
+        ssh_key_path = os.path.expanduser(ssh_key_path)
+        if not os.path.exists(ssh_key_path):
+            raise FileNotFoundError(f"SSH key file not found at {ssh_key_path}")
+            
         print(f"Using SSH key: {ssh_key_path}")
         
         # Get SSH key password from environment
         ssh_key_password = os.environ.get('SSH_KEY_PASSWORD')
-        if ssh_key_password:
-            print("Found SSH key password in environment variables")
         
         # Now actively try to establish SSH connection
         while True:
@@ -467,86 +489,111 @@ class VideoProcessor:
             print(f"Retrying SSH connection in {check_interval} seconds...")
             time.sleep(check_interval)
     
-    def _find_ssh_key(self) -> str:
-        """Find a suitable SSH key for connecting to the instance."""
-        # Get SSH key path from environment variable
-        ssh_key_path = os.environ.get('SSH_PRIVATE_KEY_PATH')
-        if not ssh_key_path:
-            print("SSH_PRIVATE_KEY_PATH environment variable not found, using default path")
-            # Use a configurable default path from environment or fall back to ~/.ssh/id_rsa
-            default_ssh_path = os.environ.get('DEFAULT_SSH_KEY_PATH', '~/.ssh/id_rsa')
-            ssh_key_path = os.path.expanduser(default_ssh_path)
-        
-        # Check if the key file exists
-        if not os.path.exists(ssh_key_path):
-            print(f"WARNING: SSH key file not found at {ssh_key_path}")
-            # Try to find an alternative key
-            # First check for Hyperbolic-specific keys
-            hyperbolic_keys = ['hyperbolic', 'hyperbolic_key', 'hyperbolic_pem', 'hyperbolic_unencrypted']
-            for key_name in hyperbolic_keys:
-                alt_path = os.path.expanduser(f"~/.ssh/{key_name}")
-                if os.path.exists(alt_path):
-                    print(f"Found Hyperbolic SSH key at {alt_path}")
-                    return alt_path
-            
-            # Then try standard keys
-            standard_keys = ['id_rsa', 'id_ed25519', 'id_ecdsa', 'id_dsa']
-            for key_name in standard_keys:
-                alt_path = os.path.expanduser(f"~/.ssh/{key_name}")
-                if os.path.exists(alt_path):
-                    print(f"Found standard SSH key at {alt_path}")
-                    return alt_path
-            
-            raise FileNotFoundError(f"No valid SSH key found. Please set SSH_PRIVATE_KEY_PATH or create a key at ~/.ssh/id_rsa")
-        
-        return ssh_key_path
-    
     def _extract_ip_address(self, instance: Dict) -> Optional[Tuple[str, int]]:
-        """Extract IP address and port from instance data using multiple methods.
+        """Extract IP address and port from instance data.
         
+        Args:
+            instance: Instance data dictionary
+            
         Returns:
-            Tuple of (ip_address, port) or None if not found
+            Tuple of (ip_address, port) if found, None otherwise
         """
-        default_port = 22
+        # Try different fields where IP might be stored
+        ip_address = None
+        port = 31424  # Default SSH port
         
-        # 1. Check regular fields
-        for field in ['public_ip', 'ip', 'ip_address', 'hostname', 'address']:
-            if field in instance and instance[field]:
-                ip_address = instance[field]
-                print(f"Found IP address in field '{field}': {ip_address}")
-                return (ip_address, default_port)
-        
-        # 2. Check sshCommand if available
+        # Check for sshCommand field first (most reliable)
         if 'sshCommand' in instance and instance['sshCommand']:
             ssh_cmd = instance['sshCommand']
             print(f"Found sshCommand: {ssh_cmd}")
-            # Try to extract hostname from ssh command (format: "ssh user@hostname -p port")
+            
+            # Parse the SSH command (format: "ssh username@hostname -p port")
             import re
-            ip_match = re.search(r'@([\w.-]+)', ssh_cmd)
+            host_match = re.search(r'@([^:\s]+)', ssh_cmd)
             port_match = re.search(r'-p\s+(\d+)', ssh_cmd)
             
-            if ip_match:
-                ip_address = ip_match.group(1)
-                port = int(port_match.group(1)) if port_match else default_port
-                print(f"Extracted IP address from sshCommand: {ip_address}, port: {port}")
+            if host_match:
+                ip_address = host_match.group(1)
+                if port_match:
+                    try:
+                        port = int(port_match.group(1))
+                    except (ValueError, TypeError):
+                        print(f"Invalid port in sshCommand: {port_match.group(1)}, using default port 31424")
+                
+                print(f"Extracted from sshCommand - IP: {ip_address}, port: {port}")
                 return (ip_address, port)
         
-        # 3. Check nested 'instance' field if it exists
-        if 'instance' in instance and isinstance(instance['instance'], dict):
-            nested_instance = instance['instance']
-            print(f"Found nested instance data, keys: {list(nested_instance.keys())}")
-            for field in ['public_ip', 'ip', 'ip_address', 'hostname', 'address']:
-                if field in nested_instance and nested_instance[field]:
-                    ip_address = nested_instance[field]
-                    print(f"Found IP address in nested instance.{field}: {ip_address}")
-                    return (ip_address, default_port)
+        # Check for IP in 'ip' field
+        if 'ip' in instance and instance['ip']:
+            ip_address = instance['ip']
+            print(f"Found IP in 'ip' field: {ip_address}")
         
-        # 4. Check for any field that looks like an IP address
-        for key, value in instance.items():
-            if isinstance(value, str) and re.match(r'^\d+\.\d+\.\d+\.\d+$', value):
-                print(f"Found IP-like string in field '{key}': {value}")
-                return (value, default_port)
+        # Check for IP in 'ipAddress' field
+        elif 'ipAddress' in instance and instance['ipAddress']:
+            ip_address = instance['ipAddress']
+            print(f"Found IP in 'ipAddress' field: {ip_address}")
         
+        # Check for IP in 'ssh' field
+        elif 'ssh' in instance and isinstance(instance['ssh'], dict):
+            ssh_info = instance['ssh']
+            if 'host' in ssh_info and ssh_info['host']:
+                ip_address = ssh_info['host']
+                print(f"Found IP in 'ssh.host' field: {ip_address}")
+            if 'port' in ssh_info and ssh_info['port']:
+                try:
+                    port = int(ssh_info['port'])
+                    print(f"Found port in 'ssh.port' field: {port}")
+                except (ValueError, TypeError):
+                    print(f"Invalid port in 'ssh.port' field: {ssh_info['port']}, using default port 22")
+        
+        # Check for IP in 'network' field
+        elif 'network' in instance and isinstance(instance['network'], dict):
+            network_info = instance['network']
+            if 'ip' in network_info and network_info['ip']:
+                ip_address = network_info['ip']
+                print(f"Found IP in 'network.ip' field: {ip_address}")
+        
+        # Check for IP in 'status' field
+        elif 'status' in instance and isinstance(instance['status'], dict):
+            status_info = instance['status']
+            if 'ip' in status_info and status_info['ip']:
+                ip_address = status_info['ip']
+                print(f"Found IP in 'status.ip' field: {ip_address}")
+        
+        # Check in nested 'instance' field
+        elif 'instance' in instance and isinstance(instance['instance'], dict):
+            nested = instance['instance']
+            
+            # Check for sshCommand in nested instance
+            if 'sshCommand' in nested and nested['sshCommand']:
+                ssh_cmd = nested['sshCommand']
+                print(f"Found sshCommand in nested instance: {ssh_cmd}")
+                
+                # Parse the SSH command
+                import re
+                host_match = re.search(r'@([^:\s]+)', ssh_cmd)
+                port_match = re.search(r'-p\s+(\d+)', ssh_cmd)
+                
+                if host_match:
+                    ip_address = host_match.group(1)
+                    if port_match:
+                        try:
+                            port = int(port_match.group(1))
+                        except (ValueError, TypeError):
+                            print(f"Invalid port in nested sshCommand: {port_match.group(1)}, using default port 22")
+                    
+                    print(f"Extracted from nested sshCommand - IP: {ip_address}, port: {port}")
+                    return (ip_address, port)
+            
+            # Check other fields in nested instance
+            for field in ['ip', 'ipAddress', 'hostname', 'address']:
+                if field in nested and nested[field]:
+                    ip_address = nested[field]
+                    print(f"Found IP in nested instance.{field}: {ip_address}")
+                    break
+        
+        if ip_address:
+            return (ip_address, port)
         return None
     
     def _setup_environment(self) -> None:
@@ -555,20 +602,21 @@ class VideoProcessor:
             return
         
         # Check if we have sudo access
-        sudo_check = execute_remote_command("sudo -n true && echo 'sudo_ok' || echo 'sudo_fail'")
+        sudo_check = execute_remote_command("sudo -n true && echo 'sudo_ok' || echo 'sudo_fail'", instance_id=self.instance_id)
         has_sudo = "sudo_ok" in sudo_check
         
         # If we don't have sudo access, use a user-writable directory instead of /workspace
         if not has_sudo and self.workspace_dir.startswith("/workspace"):
-            user_home = execute_remote_command("echo $HOME").strip()
+            user_home = execute_remote_command("echo $HOME", instance_id=self.instance_id).strip()
             self.workspace_dir = f"{user_home}/workspace"
             print(f"No sudo access. Using user workspace directory: {self.workspace_dir}")
         
         # Create workspace directory
-        execute_remote_command(f"mkdir -p {self.workspace_dir}")
+        execute_remote_command(f"mkdir -p {self.workspace_dir}", instance_id=self.instance_id)
         
         # Only run system-level commands if we have sudo access
         if has_sudo:
+            print("Installing system dependencies (this may take a few minutes)...")
             setup_commands = [
                 # Update package lists
                 "sudo apt-get update",
@@ -582,30 +630,78 @@ class VideoProcessor:
             
             for cmd in setup_commands:
                 try:
-                    result = execute_remote_command(cmd)
-        setup_commands = [
-            # Update package lists
-            "apt-get update",
-            
-            # Install system dependencies
-            "DEBIAN_FRONTEND=noninteractive apt-get install -y ffmpeg python3-pip imagemagick",
-            
-            # Create workspace directory
-            f"mkdir -p {self.workspace_dir}",
-            
-            # Install Python packages
-            "pip3 install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118",
-            "pip3 install --no-cache-dir opencv-python-headless moviepy numpy",
-            
-            # Configure ImageMagick policy to allow PDF operations (needed for some text effects)
-            "sed -i 's/rights=\"none\" pattern=\"PDF\"/rights=\"read|write\" pattern=\"PDF\"/' /etc/ImageMagick-6/policy.xml"
+                    print(f"Running: {cmd}")
+                    result = execute_remote_command(cmd, instance_id=self.instance_id)
+                    if "error" in result.lower() and not "Could not get lock" in result:
+                        print(f"Warning: Command '{cmd}' reported an error: {result}")
+                except Exception as e:
+                    print(f"Warning: Command '{cmd}' failed: {e}")
+                    print("Continuing with setup process...")
+        else:
+            print("No sudo access. Skipping system package installation.")
+            # Try to check if required tools are available
+            for tool in ["ffmpeg", "python3", "pip3"]:
+                result = execute_remote_command(f"which {tool} || echo 'not_found'", instance_id=self.instance_id)
+                if "not_found" in result:
+                    print(f"Warning: {tool} not found and cannot be installed without sudo access")
+        
+        # Install Python packages (doesn't require sudo)
+        python_commands = [
+            # Install Python packages - split into separate commands for better error handling
+            "pip3 install --user --no-cache-dir torch --index-url https://download.pytorch.org/whl/cu118",
+            "pip3 install --user --no-cache-dir torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118",
+            "pip3 install --user --no-cache-dir opencv-python-headless moviepy numpy"
         ]
         
-        for cmd in setup_commands:
+        for i, cmd in enumerate(python_commands):
             try:
-                result = execute_remote_command(self.instance_id, cmd)
-                if "error" in result.lower():
-                    raise RuntimeError(f"Failed to setup environment: {result}")
+                print(f"\nInstalling Python package ({i+1}/{len(python_commands)})...")
+                print(f"Running: {cmd}")
+                print("This may take several minutes. Please be patient...")
+                
+                # For PyTorch installation, use a longer timeout
+                timeout = 900 if "torch" in cmd else 300  # 15 minutes for torch, 5 minutes for others
+                
+                # Execute in background with progress indicator
+                background_cmd = f"nohup {cmd} > /tmp/pip_install_{i}.log 2>&1 & echo $!"
+                pid = execute_remote_command(background_cmd, instance_id=self.instance_id, timeout=30).strip()
+                
+                # Monitor progress
+                start_time = time.time()
+                while True:
+                    # Check if process is still running
+                    check_cmd = f"ps -p {pid} > /dev/null && echo 'running' || echo 'done'"
+                    status = execute_remote_command(check_cmd, instance_id=self.instance_id, timeout=30).strip()
+                    
+                    # Get the last few lines of the log
+                    log_cmd = f"tail -n 5 /tmp/pip_install_{i}.log 2>/dev/null || echo 'No log yet'"
+                    log_output = execute_remote_command(log_cmd, instance_id=self.instance_id, timeout=30)
+                    
+                    elapsed = time.time() - start_time
+                    print(f"Status after {elapsed:.1f}s: {status}")
+                    if log_output and log_output != "No log yet":
+                        print(f"Recent output:\n{log_output}")
+                    
+                    if status == "done":
+                        break
+                    
+                    # Check if we've exceeded the timeout
+                    if elapsed > timeout:
+                        print(f"Command timed out after {timeout} seconds. Killing process...")
+                        execute_remote_command(f"kill {pid}", instance_id=self.instance_id, timeout=30)
+                        raise TimeoutError(f"Command timed out: {cmd}")
+                    
+                    # Wait before checking again
+                    time.sleep(10)
+                
+                # Check for errors in the log
+                error_check = f"grep -i 'error' /tmp/pip_install_{i}.log || echo 'No errors found'"
+                errors = execute_remote_command(error_check, instance_id=self.instance_id, timeout=30)
+                if errors and errors != "No errors found":
+                    print(f"Warning: Possible errors during installation:\n{errors}")
+                else:
+                    print(f"Package installation completed successfully!")
+                
             except Exception as e:
                 print(f"Warning: Command '{cmd}' failed: {e}")
                 print("Continuing with setup process...")
@@ -746,41 +842,57 @@ class VideoProcessor:
             execute_remote_command(self.instance_id, cmd)
     
     def cleanup(self) -> None:
-        """Release resources and clean up temporary files."""
+        """Clean up resources."""
         if self.local_mode:
-            if os.path.exists(self.workspace_dir):
+            # Clean up local temp directory
+            if hasattr(self, 'workspace_dir') and os.path.exists(self.workspace_dir):
                 import shutil
-                shutil.rmtree(self.workspace_dir)
-            self.local_processor = None
-        else:
-            # Close SSH connection using the ssh_manager
+                try:
+                    shutil.rmtree(self.workspace_dir)
+                except Exception as e:
+                    print(f"Warning: Failed to clean up workspace directory: {str(e)}")
+            return
+        
+        # Clean up remote resources
+        if self.instance_id:
             try:
+                # First disconnect SSH if connected
+                if self.file_transfer:
+                    try:
+                        print("Closing file transfer connection...")
+                        self.file_transfer.close()
+                        self.file_transfer = None
+                    except Exception as e:
+                        print(f"Warning: Error closing file transfer: {str(e)}")
+                
+                # Disconnect SSH
                 if ssh_manager.is_connected:
                     try:
+                        print("Disconnecting SSH session")
                         ssh_manager.disconnect()
                         print("SSH connection closed.")
                     except Exception as e:
                         print(f"Warning: Error disconnecting SSH: {str(e)}")
+                
+                # Terminate the instance
+                print(f"Terminating instance {self.instance_id}...")
+                terminate_compute(self.instance_id)
+                print(f"Instance {self.instance_id} terminated successfully.")
+                
+                # Remove from active instances
+                if self.instance_id in self.__class__.active_instances:
+                    self.__class__.active_instances.remove(self.instance_id)
+                
+                self.instance_id = None
+                self.current_instance = None
+                
             except Exception as e:
-                print(f"Warning: Error accessing SSH manager: {str(e)}")
-            
-            # Make sure to reset any stored SSH client references
-            if hasattr(self, 'ssh_client'):
-                self.ssh_client = None
-            
-            if self.instance_id:
-                try:
-                    print(f"Terminating instance {self.instance_id}...")
-                    terminate_compute(self.instance_id)
-                    print(f"Instance {self.instance_id} terminated successfully.")
-                    
+                print(f"Warning: Failed to terminate instance {self.instance_id}: {str(e)}")
+                # If the error indicates the instance doesn't exist, it's already terminated
+                if "not found" in str(e).lower():
+                    print(f"Instance {self.instance_id} appears to be already terminated.")
                     # Remove from active instances
                     if self.instance_id in self.__class__.active_instances:
                         self.__class__.active_instances.remove(self.instance_id)
-                except Exception as e:
-                    print(f"Warning: Failed to terminate instance {self.instance_id}: {str(e)}")
-                finally:
                     self.instance_id = None
-                    self.current_instance = None
-                    self.file_transfer = None
-                    self.scene_processor = None 
+                    self.current_instance = None 

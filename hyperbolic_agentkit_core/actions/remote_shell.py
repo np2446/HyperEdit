@@ -31,7 +31,7 @@ class RemoteShellInput(BaseModel):
     """Input argument schema for remote shell execution."""
     command: str = Field(..., description="Shell command to execute on the remote server")
 
-def execute_remote_command(command: str, instance_id: Optional[str] = None, max_retries: int = 3, retry_delay: int = 5) -> str:
+def execute_remote_command(command: str, instance_id: Optional[str] = None, max_retries: int = 3, retry_delay: int = 5, timeout: int = 300) -> str:
     """
     Execute a command on a remote server via SSH.
     
@@ -40,6 +40,7 @@ def execute_remote_command(command: str, instance_id: Optional[str] = None, max_
         instance_id: Optional instance ID (not used directly but kept for backward compatibility)
         max_retries: Maximum number of retry attempts
         retry_delay: Delay between retries in seconds
+        timeout: Command execution timeout in seconds (default: 5 minutes)
     
     Returns:
         str: Command output or error message
@@ -53,7 +54,12 @@ def execute_remote_command(command: str, instance_id: Optional[str] = None, max_
     for attempt in range(max_retries):
         try:
             logger.info(f"Executing remote command (attempt {attempt+1}/{max_retries}): {command}")
-            result = ssh_manager.execute(command, timeout=300)  # 5-minute timeout
+            
+            # For long-running commands, provide a more informative message
+            if timeout > 300:  # If timeout is more than 5 minutes
+                logger.info(f"This command may take up to {timeout//60} minutes to complete")
+            
+            result = ssh_manager.execute(command, timeout=timeout)
             
             # Check if the command failed
             if result.startswith("Error:") or result.startswith("SSH Command Error:"):
@@ -66,6 +72,18 @@ def execute_remote_command(command: str, instance_id: Optional[str] = None, max_
                     continue
             
             return result
+            
+        except KeyboardInterrupt:
+            logger.warning("Command interrupted by user")
+            # Try to send Ctrl+C to the remote process if possible
+            try:
+                logger.info("Attempting to gracefully terminate the remote process...")
+                # This is a best-effort attempt and may not always work
+                ssh_manager.execute("pkill -INT -f '" + command.replace("'", "'\\''") + "'", timeout=10)
+            except Exception as e:
+                logger.error(f"Failed to terminate remote process: {str(e)}")
+            
+            return "Error: Command interrupted by user"
             
         except Exception as e:
             logger.error(f"Error executing remote command: {str(e)}")
