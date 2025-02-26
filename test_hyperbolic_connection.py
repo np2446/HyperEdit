@@ -23,6 +23,7 @@ load_dotenv()
 from video_agent.video_processor import VideoProcessor, GPURequirements
 from video_agent.file_transfer import FileTransfer
 from hyperbolic_agentkit_core.actions.remote_shell import execute_remote_command
+from hyperbolic_agentkit_core.actions.ssh_manager import ssh_manager
 
 def check_environment():
     """Check if the environment is properly configured for Hyperbolic GPU usage."""
@@ -109,36 +110,123 @@ def run_connection_test():
         print("\n✅ GPU environment set up successfully!")
         print(f"Instance ID: {processor.instance_id}")
         
-        # Test 1: Create remote directories
-        print("\n=== Test 1: Creating Remote Directories ===")
-        remote_test_dir = f"{processor.workspace_dir}/test_connection"
-        cmd_result = execute_remote_command(f"mkdir -p {remote_test_dir}", instance_id=processor.instance_id)
+        # Get SSH key path and password from environment
+        ssh_key_path = os.environ.get('SSH_PRIVATE_KEY_PATH')
+        ssh_key_password = os.environ.get('SSH_KEY_PASSWORD')
+        
+        # Get instance details
+        instance_data = processor.current_instance
+        ssh_command = instance_data.get('sshCommand', '')
+        
+        # Extract hostname and port from SSH command
+        import re
+        match = re.search(r'ssh\s+(\w+)@([^:\s]+)(?:\s+-p\s+(\d+))?', ssh_command)
+        if match:
+            username, hostname, port = match.groups()
+            port = int(port) if port else 22
+            print(f"Extracted connection details: {username}@{hostname}:{port}")
+        else:
+            print(f"Could not parse SSH command: {ssh_command}")
+            return False
+        
+        # Test SSH connection directly
+        print("\n=== Test 1: Verifying SSH Connection ===")
+        print("Testing direct SSH connection...")
+        
+        # Ensure any previous connections are closed
+        if ssh_manager.is_connected:
+            ssh_manager.disconnect()
+            print("Closed previous SSH connection")
+        
+        # Connect using the instance details
+        from hyperbolic_agentkit_core.actions.connect_ssh import connect_ssh
+        ssh_result = connect_ssh(
+            host=hostname,
+            username=username,
+            private_key_path=ssh_key_path,
+            port=port,
+            key_password=ssh_key_password
+        )
+        
+        print(f"SSH connection result: {ssh_result}")
+        if "Successfully connected" not in ssh_result:
+            print("❌ SSH connection failed. Cannot proceed with tests.")
+            return False
+        
+        # Test 2: Check home directory and permissions
+        print("\n=== Test 2: Checking Home Directory ===")
+        home_dir_cmd = "echo $HOME"
+        home_dir_result = execute_remote_command(home_dir_cmd, instance_id=processor.instance_id)
+        home_dir = home_dir_result.strip()
+        print(f"Home directory: {home_dir}")
+        
+        # Check if we can write to home directory
+        test_dir = f"{home_dir}/test_connection"
+        cmd_result = execute_remote_command(f"mkdir -p {test_dir}", instance_id=processor.instance_id)
         print(f"Directory creation result: {cmd_result}")
         
-        # Test 2: File upload
-        print("\n=== Test 2: File Upload ===")
+        # Test 3: File upload to home directory
+        print("\n=== Test 3: File Upload to Home Directory ===")
         test_file = "test_connection.txt"
         with open(test_file, "w") as f:
             f.write(f"This is a test file created at {time.ctime()}\n")
             f.write("It tests the file upload capability of Hyperbolic.")
         
-        remote_test_path = f"{remote_test_dir}/test_connection.txt"
-        processor.file_transfer.upload_file(test_file, remote_test_path)
-        print("✅ File upload successful!")
+        remote_test_path = f"{test_dir}/test_connection.txt"
         
-        # Test 3: List remote files
-        print("\n=== Test 3: Listing Remote Files ===")
-        remote_files = processor.file_transfer.list_remote_files(remote_test_dir)
-        print(f"Remote files: {remote_files}")
+        # Use SCP directly for more control
+        import subprocess
+        scp_cmd = [
+            "scp", 
+            "-P", str(port),
+            "-i", ssh_key_path,
+            test_file, 
+            f"{username}@{hostname}:{remote_test_path}"
+        ]
         
-        # Test 4: Upload and run Python script
-        print("\n=== Test 4: Running Python Script on Remote Instance ===")
+        print(f"Running SCP command: {' '.join(scp_cmd)}")
+        try:
+            # If SSH key has a password, we need to use sshpass or similar
+            # For now, we'll rely on the key being loaded in the SSH agent
+            result = subprocess.run(scp_cmd, capture_output=True, text=True)
+            if result.returncode == 0:
+                print("✅ File upload successful!")
+            else:
+                print(f"❌ File upload failed: {result.stderr}")
+                print("Trying alternative upload method...")
+                
+                # Try using sftp via Python's paramiko
+                try:
+                    sftp = ssh_manager.client.open_sftp()
+                    sftp.put(test_file, remote_test_path)
+                    sftp.close()
+                    print("✅ File upload successful using SFTP!")
+                except Exception as e:
+                    print(f"❌ SFTP upload failed: {str(e)}")
+                    return False
+        except Exception as e:
+            print(f"❌ Error during SCP: {str(e)}")
+            return False
+        
+        # Test 4: List remote files
+        print("\n=== Test 4: Listing Remote Files ===")
+        ls_result = execute_remote_command(f"ls -la {test_dir}", instance_id=processor.instance_id)
+        print(f"Remote directory contents:\n{ls_result}")
+        
+        # Test 5: Upload and run Python script
+        print("\n=== Test 5: Running Python Script on Remote Instance ===")
         script_path = create_test_python_script()
-        remote_script_path = f"{remote_test_dir}/system_info.py"
+        remote_script_path = f"{test_dir}/system_info.py"
         
-        # Upload the script
-        processor.file_transfer.upload_file(script_path, remote_script_path)
-        print("✅ Python script uploaded successfully!")
+        # Upload the script using SFTP
+        try:
+            sftp = ssh_manager.client.open_sftp()
+            sftp.put(script_path, remote_script_path)
+            sftp.close()
+            print("✅ Python script uploaded successfully!")
+        except Exception as e:
+            print(f"❌ Script upload failed: {str(e)}")
+            return False
         
         # Make the script executable
         execute_remote_command(f"chmod +x {remote_script_path}", instance_id=processor.instance_id)
@@ -161,21 +249,32 @@ def run_connection_test():
             print("Could not parse JSON output. Raw output:")
             print(script_output)
         
-        # Test 5: Download file
-        print("\n=== Test 5: File Download ===")
+        # Test 6: Download file
+        print("\n=== Test 6: File Download ===")
         # Create a file on the remote instance
-        remote_output_file = f"{remote_test_dir}/remote_created.txt"
+        remote_output_file = f"{test_dir}/remote_created.txt"
         execute_remote_command(f"echo 'This file was created on the remote instance at $(date)' > {remote_output_file}", instance_id=processor.instance_id)
         
-        # Download the file
+        # Download the file using SFTP
         local_output_file = "remote_created.txt"
-        processor.file_transfer.download_file(remote_output_file, local_output_file)
-        print("✅ File download successful!")
+        try:
+            sftp = ssh_manager.client.open_sftp()
+            sftp.get(remote_output_file, local_output_file)
+            sftp.close()
+            print("✅ File download successful!")
+        except Exception as e:
+            print(f"❌ File download failed: {str(e)}")
+            return False
         
         # Display the content of the downloaded file
         with open(local_output_file, "r") as f:
             content = f.read()
             print(f"Content of downloaded file: {content}")
+        
+        # Test 7: Check GPU status
+        print("\n=== Test 7: Checking GPU Status ===")
+        gpu_result = execute_remote_command("nvidia-smi", instance_id=processor.instance_id)
+        print(f"GPU Status:\n{gpu_result}")
         
         print("\n=== All Tests Completed Successfully! ===")
         return True
@@ -193,6 +292,11 @@ def run_connection_test():
             os.unlink(test_file)
         if 'local_output_file' in locals() and os.path.exists(local_output_file):
             os.unlink(local_output_file)
+        
+        # Disconnect SSH
+        if ssh_manager.is_connected:
+            print("Disconnecting SSH session...")
+            ssh_manager.disconnect()
         
         # Terminate the instance
         if processor.instance_id:

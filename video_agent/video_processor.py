@@ -113,6 +113,26 @@ class VideoProcessor:
                     if "not found" in str(e).lower():
                         print(f"Instance {instance_id} appears to be already terminated.")
     
+    def setup_local_environment(self):
+        """Set up the local processing environment.
+        
+        This initializes the local scene processor for video processing without Hyperbolic GPUs.
+        """
+        if not self.local_mode:
+            raise ValueError("Cannot set up local environment when not in local mode")
+        
+        print("Setting up local processing environment...")
+        
+        # Create necessary directories
+        os.makedirs(self.workspace_dir, exist_ok=True)
+        
+        # Create the local processor with the workspace directory
+        self.local_processor = LocalSceneProcessor(workspace_dir=self.workspace_dir)
+        
+        print("Local processing environment set up successfully!")
+        
+        return True
+    
     def setup_gpu_environment(self, requirements: GPURequirements) -> None:
         """Set up processing environment based on mode and requirements.
         
