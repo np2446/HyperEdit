@@ -14,6 +14,7 @@ Input parameters:
 - password: SSH password for authentication (optional if using key)
 - private_key_path: Path to private key file (optional, uses SSH_PRIVATE_KEY_PATH from environment if not provided)
 - port: SSH port number (default: 22)
+- key_password: Password for encrypted private key (optional)
 
 Important notes:
 - After connecting, use the 'remote_shell' tool to execute commands on the server
@@ -28,9 +29,11 @@ class SSHAccessInput(BaseModel):
     password: Optional[str] = Field(None, description="SSH password for authentication")
     private_key_path: Optional[str] = Field(None, description="Path to private key file")
     port: int = Field(22, description="SSH port number")
+    key_password: Optional[str] = Field(None, description="Password for encrypted private key")
 
 def connect_ssh(host: str, username: str, password: Optional[str] = None, 
-                private_key_path: Optional[str] = None, port: int = 22) -> str:
+                private_key_path: Optional[str] = None, port: int = 22,
+                key_password: Optional[str] = None) -> str:
     """
     Establish SSH connection to remote server.
     
@@ -40,16 +43,22 @@ def connect_ssh(host: str, username: str, password: Optional[str] = None,
         password: Optional SSH password for authentication
         private_key_path: Optional path to private key file
         port: SSH port number (default: 22)
+        key_password: Optional password for encrypted private key
     
     Returns:
         str: Connection status message
     """
+    # If key_password is not provided, try to get it from environment
+    if not key_password:
+        key_password = os.environ.get('SSH_KEY_PASSWORD')
+    
     return ssh_manager.connect(
         host=host,
         username=username,
         password=password,
         private_key_path=private_key_path,
-        port=port
+        port=port,
+        key_password=key_password
     )
 
 class SSHAccessAction(HyperbolicAction):

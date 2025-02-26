@@ -1,49 +1,104 @@
+import os
+import json
+import time
+from typing import Optional
+import logging
+
 from collections.abc import Callable
 from pydantic import BaseModel, Field
 from hyperbolic_agentkit_core.actions.hyperbolic_action import HyperbolicAction
 from hyperbolic_agentkit_core.actions.ssh_manager import ssh_manager
 
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("RemoteShell")
+
 REMOTE_SHELL_PROMPT = """
-Execute shell commands on the remote server via SSH.
+Execute commands on a remote server via SSH. This tool requires an active SSH connection.
 
 Input parameters:
 - command: The shell command to execute on the remote server
 
 Important notes:
-- Requires an active SSH connection (use ssh_connect first)
-- Use 'ssh_status' to check current connection status
-- Commands are executed in the connected SSH session
-- Returns command output as a string
-- You can install any packages you need on the remote server
+- Use 'ssh_connect' first to establish an SSH connection
+- Commands are executed in the same session, so environment variables and working directory are preserved between calls
+- For long-running commands, consider adding '&' at the end to run in background
+- Use 'cd' to change directories, 'pwd' to check current directory
+- Standard output and error from the command will be returned
 """
 
 class RemoteShellInput(BaseModel):
-    """Input argument schema for remote shell commands."""
-    command: str = Field(..., description="The shell command to execute on the remote server")
+    """Input argument schema for remote shell execution."""
+    command: str = Field(..., description="Shell command to execute on the remote server")
 
-def execute_remote_command(command: str) -> str:
+def execute_remote_command(command: str, instance_id: Optional[str] = None, max_retries: int = 3, retry_delay: int = 5, timeout: int = 300) -> str:
     """
-    Execute a command on the remote server.
+    Execute a command on a remote server via SSH.
     
     Args:
-        command: The shell command to execute
+        command: Shell command to execute
+        instance_id: Optional instance ID (not used directly but kept for backward compatibility)
+        max_retries: Maximum number of retry attempts
+        retry_delay: Delay between retries in seconds
+        timeout: Command execution timeout in seconds (default: 5 minutes)
     
     Returns:
         str: Command output or error message
     """
-    # Special command to check SSH status
-    if command.strip().lower() == 'ssh_status':
-        return ssh_manager.get_connection_info()
-
-    # Verify SSH is connected before executing
+    # Check if SSH connection is active
     if not ssh_manager.is_connected:
-        return "Error: No active SSH connection. Please connect to a remote server first using ssh_connect."
-
-    # Execute command remotely
-    return ssh_manager.execute(command)
+        logger.warning("No active SSH connection")
+        return "Error: No active SSH connection. Please connect first using ssh_connect."
+    
+    # Execute command with retries
+    for attempt in range(max_retries):
+        try:
+            logger.info(f"Executing remote command (attempt {attempt+1}/{max_retries}): {command}")
+            
+            # For long-running commands, provide a more informative message
+            if timeout > 300:  # If timeout is more than 5 minutes
+                logger.info(f"This command may take up to {timeout//60} minutes to complete")
+            
+            result = ssh_manager.execute(command, timeout=timeout)
+            
+            # Check if the command failed
+            if result.startswith("Error:") or result.startswith("SSH Command Error:"):
+                logger.warning(f"Command failed: {result}")
+                
+                # If this is not the last attempt, retry
+                if attempt < max_retries - 1:
+                    logger.info(f"Retrying in {retry_delay} seconds...")
+                    time.sleep(retry_delay)
+                    continue
+            
+            return result
+            
+        except KeyboardInterrupt:
+            logger.warning("Command interrupted by user")
+            # Try to send Ctrl+C to the remote process if possible
+            try:
+                logger.info("Attempting to gracefully terminate the remote process...")
+                # This is a best-effort attempt and may not always work
+                ssh_manager.execute("pkill -INT -f '" + command.replace("'", "'\\''") + "'", timeout=10)
+            except Exception as e:
+                logger.error(f"Failed to terminate remote process: {str(e)}")
+            
+            return "Error: Command interrupted by user"
+            
+        except Exception as e:
+            logger.error(f"Error executing remote command: {str(e)}")
+            
+            # If this is not the last attempt, retry
+            if attempt < max_retries - 1:
+                logger.info(f"Retrying in {retry_delay} seconds...")
+                time.sleep(retry_delay)
+            else:
+                return f"Error executing remote command: {str(e)}"
+    
+    return "Error: Maximum retry attempts reached"
 
 class RemoteShellAction(HyperbolicAction):
-    """Remote shell command execution action."""
+    """Remote shell execution action."""
     
     name: str = "remote_shell"
     description: str = REMOTE_SHELL_PROMPT
