@@ -1,0 +1,40 @@
+# Environment variables
+.env
+
+# Othentic specific
+.othentic
+
+# Dependencies
+node_modules
+package-lock.json
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# Build output
+dist
+build
+
+# IDE
+.idea
+.vscode
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Keystore
+.Keystore
+Eigen-Othentic-Operator-Keys
