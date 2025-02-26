@@ -54,6 +54,9 @@ llm = ChatAnthropic(
 output_dir = project_root / "test_outputs"
 output_dir.mkdir(exist_ok=True)
 
+
+# Sample request: 
+# curl -X POST "http://localhost:8000/process-video/circles_warm.mp4" -H "Content-Type: application/json" -d '{"prompt": "Add a title caption 'Warm Patterns' that fades in at the start"}'
 @app.post("/process-video/{video_name}")
 async def process_video(
     video_name: str,
