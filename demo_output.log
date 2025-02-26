@@ -1,2 +1,0 @@
-/Users/noah/Documents/Project-Jarvis/demo_hyperbolic_video_agent.py:177: DeprecationWarning: `np.int0` is a deprecated alias for `np.intp`.  (Deprecated NumPy 1.24)
-  rect = np.int0(rect)
