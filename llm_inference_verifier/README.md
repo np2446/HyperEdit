@@ -1,6 +1,6 @@
 # Verifiable LLM Inference AVS
 
-This repository demonstrates how to implement verifiable inference from a Gaia node using the Othentic Stack, designed initially by MotherDAO and updated by Team EIKOAI .
+This repository demonstrates how to implement verifiable inference from a Hyperbolic node using the Othentic Stack, designed initially by MotherDAO.
 
 ---
 
@@ -63,7 +63,7 @@ Sugoi ✨(≧◡≦)💖
 - **Verifiable LLM Inference:** Ensures transparent and verifiable AI responses through AVS
 - **Containerised deployment:** Simplifies deployment and scaling
 - **Prometheus and Grafana integration:** Enables real-time monitoring and observability
-- **Integration with Gaia Nodes:** Connects to Mother's network of AI agents
+- **Integration with Hyperbolic Nodes:** Connects to Mother's network of AI agents
 
 ## Project Structure
 
@@ -85,7 +85,7 @@ The architecture leverages Othentic's AVS framework to create a verifiable infer
 
 Task Execution logic:
 - Receive an LLM query
-- Send query to Gaia node for inference
+- Send query to Hyperbolic node for inference
 - Store the result in IPFS
 - Share the IPFS CID as proof
 
@@ -93,7 +93,7 @@ Validation Service logic:
 - Retrieve the LLM response from IPFS using the CID
 - Validate the response format and structure
 - Ensure the response adheres to Mother's communication principles
-- Verify the inference came from an authorized Gaia node
+- Verify the inference came from an authorized Hyperbolic node
 
 This architecture ensures that AI responses are:
 - Verifiable through blockchain consensus
