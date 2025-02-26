@@ -133,3 +133,7 @@ Follow the steps in the official documentation's [Quickstart](https://docs.othen
 Customize the inference parameters, adjust validation criteria, and deploy your own verifiable AI service using Mother's infrastructure.
 
 Building sustainable Web3 intelligence together! 🌱
+
+Example cURL request: 
+
+curl -X POST http://localhost:4003/task/execute -H "Content-Type: application/json" -d '{"query": "What is the weather like today?", "taskDefinitionId": 0}' | cat
