@@ -129,53 +129,55 @@ class VideoTool(BaseTool):
         
         return self.analyzed_videos
     
-    async def _verify_llm_response(self, prompt: str, response: str) -> Dict[str, Any]:
-        """Verify LLM response using the AVS execution service."""
+    def _verify_llm_response_sync(self, prompt: str, response: str) -> Dict[str, Any]:
+        """Synchronous version of LLM response verification."""
         try:
             print("\n=== Starting LLM Response Verification ===")
             print(f"Execution Service URL: {self.execution_service_url}")
             print(f"Prompt: {prompt}")
             print(f"Response: {response}")
             
-            async with aiohttp.ClientSession() as session:
-                payload = {
-                    "query": prompt,
-                    "response": response,
-                    "taskDefinitionId": 0
+            import requests
+            
+            payload = {
+                "query": prompt,
+                "response": response,
+                "taskDefinitionId": 0
+            }
+            
+            verification_url = f"{self.execution_service_url}/task/execute"
+            print(f"\nSending verification request to: {verification_url}")
+            print(f"Payload: {json.dumps(payload, indent=2)}")
+            
+            headers = {"Content-Type": "application/json"}
+            resp = requests.post(
+                verification_url,
+                json=payload,
+                headers=headers
+            )
+            
+            print(f"\nResponse status: {resp.status_code}")
+            if resp.status_code == 200:
+                result = resp.json()
+                print(f"Verification result: {json.dumps(result, indent=2)}")
+                
+                tx_hash = result.get("data", {}).get("proofOfTask")
+                chain_url = f"https://sepolia.etherscan.io/tx/{tx_hash}" if tx_hash else None
+                
+                return {
+                    "is_valid": True,
+                    "verification_id": tx_hash,
+                    "chain_url": chain_url,
+                    "timestamp": datetime.now().isoformat(),
+                    "raw_response": result
                 }
-                
-                verification_url = f"{self.execution_service_url}/task/execute"
-                print(f"\nSending verification request to: {verification_url}")
-                print(f"Payload: {json.dumps(payload, indent=2)}")
-                
-                headers = {"Content-Type": "application/json"}
-                async with session.post(
-                    verification_url,
-                    json=payload,
-                    headers=headers
-                ) as resp:
-                    print(f"\nResponse status: {resp.status}")
-                    if resp.status == 200:
-                        result = await resp.json()
-                        print(f"Verification result: {json.dumps(result, indent=2)}")
-                        
-                        tx_hash = result.get("transactionHash")
-                        chain_url = f"https://sepolia.etherscan.io/tx/{tx_hash}" if tx_hash else None
-                        
-                        return {
-                            "is_valid": True,
-                            "verification_id": tx_hash,
-                            "chain_url": chain_url,
-                            "timestamp": datetime.now().isoformat(),
-                            "raw_response": result
-                        }
-                    else:
-                        error_text = await resp.text()
-                        print(f"Verification failed: {error_text}")
-                        return {
-                            "is_valid": False,
-                            "error": f"Verification request failed with status {resp.status}: {error_text}"
-                        }
+            else:
+                error_text = resp.text
+                print(f"Verification failed: {error_text}")
+                return {
+                    "is_valid": False,
+                    "error": f"Verification request failed with status {resp.status_code}: {error_text}"
+                }
         except Exception as e:
             print(f"Error during verification: {str(e)}")
             traceback.print_exc()
@@ -184,20 +186,20 @@ class VideoTool(BaseTool):
                 "error": str(e)
             }
 
-    async def _get_verified_llm_response(self, prompt: str) -> Tuple[str, Dict[str, Any]]:
-        """Get LLM response and verify it with the AVS execution service."""
+    def _get_verified_llm_response_sync(self, prompt: str) -> Tuple[str, Dict[str, Any]]:
+        """Synchronous version of getting verified LLM response."""
         response = self.llm.invoke(prompt).content
         print(f"\nLLM response received:\n{response}")
         
-        verification_result = await self._verify_llm_response(prompt, response)
+        verification_result = self._verify_llm_response_sync(prompt, response)
         if not verification_result["is_valid"]:
             error_msg = verification_result.get("error", "Response verification failed")
             raise ValueError(f"Invalid LLM response: {error_msg}")
         
         return response, verification_result
 
-    def _parse_edit_request(self, query: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-        """Use LLM to parse natural language query into structured edit request and return verification details."""
+    def _parse_edit_request_sync(self, query: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        """Synchronous version of parsing edit request."""
         print("\n=== Starting Edit Request Parsing ===")
         print(f"Input query: {query}")
         
@@ -284,10 +286,8 @@ Rules:
 
 Your response must be ONLY the JSON object, with no other text."""
 
-        print("\nGetting LLM response and verifying...")
         # Get verified response from LLM
-        loop = asyncio.get_event_loop()
-        response, verification_details = loop.run_until_complete(self._get_verified_llm_response(prompt))
+        response, verification_details = self._get_verified_llm_response_sync(prompt)
         print("\nVerification complete")
         print(f"Verification details: {json.dumps(verification_details, indent=2)}")
         
@@ -447,8 +447,8 @@ Your response must be ONLY the JSON object, with no other text."""
         
         return request, plan
     
-    async def _arun(self, query: str, runnable_config: Optional[RunnableConfig] = None) -> Dict[str, Any]:
-        """Process a video editing request and return result with verification details."""
+    def _run(self, query: str, runnable_config: Optional[RunnableConfig] = None) -> str:
+        """Synchronous version of video processing."""
         try:
             # Get list of available videos
             videos = self._get_input_videos()
@@ -467,7 +467,7 @@ Your response must be ONLY the JSON object, with no other text."""
                     query_str = query
                 
                 # Always parse and verify the request
-                parsed_request, verification_details = self._parse_edit_request(query_str)
+                parsed_request, verification_details = self._parse_edit_request_sync(query_str)
                 print(f"\nParsed request:\n{json.dumps(parsed_request, indent=2)}")
                 
                 print("\nCreating edit plan...")
@@ -499,11 +499,6 @@ Your response must be ONLY the JSON object, with no other text."""
                 "status": "error",
                 "message": f"Error processing video: {str(e)}"
             }
-    
-    def _run(self, query: str, runnable_config: Optional[RunnableConfig] = None) -> str:
-        """Synchronous version of video processing."""
-        loop = asyncio.get_event_loop()
-        return loop.run_until_complete(self._arun(query, runnable_config))
 
 class VideoToolkit:
     """Toolkit for video processing capabilities."""
