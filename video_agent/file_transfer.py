@@ -7,6 +7,10 @@ import os
 import json
 import time
 import subprocess
+import tempfile
+import hashlib
+import base64
+import uuid
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -233,6 +237,16 @@ class FileTransfer:
         remote_dir = str(Path(remote_path).parent)
         execute_remote_command(f"mkdir -p {remote_dir}", instance_id=self.instance_id)
         
+        # Try curl-based upload first
+        try:
+            print(f"Attempting to upload file via curl: {local_path} -> {remote_path}")
+            self.upload_via_curl(local_path, remote_path, max_retries)
+            return
+        except Exception as e:
+            print(f"Curl-based upload failed: {str(e)}")
+            print("Falling back to traditional SCP upload...")
+        
+        # Traditional SCP upload (as fallback)
         # Get SSH connection info
         ssh_info = self._get_ssh_info()
         
@@ -293,6 +307,178 @@ class FileTransfer:
                 time.sleep(retry_delay)
         
         raise RuntimeError(f"Failed to upload file after {max_retries} attempts: {local_path}")
+    
+    def upload_via_curl(self, local_path: str, remote_path: str, max_retries: int = 3) -> None:
+        """Upload a file to the GPU instance using curl.
+        
+        This method uploads the file to a temporary file sharing service, then
+        uses curl on the remote instance to download it.
+        
+        Args:
+            local_path: Path to local file
+            remote_path: Destination path on GPU instance
+            max_retries: Maximum number of retry attempts
+        """
+        if not os.path.exists(local_path):
+            raise FileNotFoundError(f"Local file not found: {local_path}")
+        
+        # Get file size
+        file_size_mb = os.path.getsize(local_path) / (1024 * 1024)
+        print(f"File size: {file_size_mb:.2f} MB")
+        
+        # Choose upload method based on file size
+        # For smaller files (< 25 MB), use transfer.sh
+        # For larger files, recommend other services
+        
+        if file_size_mb < 25:
+            # Using transfer.sh service (free, no authentication needed)
+            for attempt in range(max_retries):
+                try:
+                    print(f"Uploading to temporary file service (attempt {attempt+1}/{max_retries})...")
+                    
+                    # Generate a unique filename to avoid collisions
+                    unique_filename = f"{uuid.uuid4().hex}_{os.path.basename(local_path)}"
+                    
+                    # Upload file to transfer.sh
+                    upload_cmd = [
+                        "curl", 
+                        "--upload-file", 
+                        local_path,
+                        f"https://transfer.sh/{unique_filename}"
+                    ]
+                    
+                    process = subprocess.run(upload_cmd, capture_output=True, text=True, check=True)
+                    download_url = process.stdout.strip()
+                    
+                    print(f"File uploaded to: {download_url}")
+                    
+                    # Now use curl on the remote server to download the file
+                    print(f"Instructing remote server to download file...")
+                    download_cmd = f"curl -s -L '{download_url}' -o '{remote_path}' && echo 'success'"
+                    result = execute_remote_command(download_cmd, instance_id=self.instance_id, timeout=300)
+                    
+                    if "success" in result:
+                        # Verify file exists and has content
+                        verify_cmd = f"test -s '{remote_path}' && echo 'exists'"
+                        verify_result = execute_remote_command(verify_cmd, instance_id=self.instance_id)
+                        
+                        if "exists" in verify_result:
+                            print(f"Successfully transferred file via curl: {local_path} -> {remote_path}")
+                            return
+                        else:
+                            print(f"Warning: File download appeared successful, but file not found or empty")
+                    else:
+                        print(f"Curl download failed (attempt {attempt+1}/{max_retries}): {result}")
+                
+                except Exception as e:
+                    print(f"Error during transfer.sh upload (attempt {attempt+1}/{max_retries}): {str(e)}")
+                
+                # Wait before retrying
+                if attempt < max_retries - 1:
+                    retry_delay = 5 * (attempt + 1)  # Exponential backoff
+                    print(f"Retrying in {retry_delay} seconds...")
+                    time.sleep(retry_delay)
+        
+        # Alternative for larger files: Use gofile.io which supports up to 2GB free
+        elif file_size_mb < 2000:  # Less than 2GB
+            for attempt in range(max_retries):
+                try:
+                    print(f"File is too large for transfer.sh. Using gofile.io (attempt {attempt+1}/{max_retries})...")
+                    
+                    # Step 1: Get server for upload
+                    server_response = subprocess.run(
+                        ["curl", "https://api.gofile.io/getServer"],
+                        capture_output=True,
+                        text=True,
+                        check=True
+                    )
+                    server_data = json.loads(server_response.stdout)
+                    if not server_data.get("status") == "ok":
+                        raise RuntimeError("Failed to get gofile.io server")
+                    
+                    server = server_data["data"]["server"]
+                    
+                    # Step 2: Upload the file
+                    upload_cmd = [
+                        "curl", 
+                        "-F", 
+                        f"file=@{local_path}", 
+                        f"https://{server}.gofile.io/uploadFile"
+                    ]
+                    
+                    process = subprocess.run(upload_cmd, capture_output=True, text=True, check=True)
+                    upload_result = json.loads(process.stdout)
+                    
+                    if upload_result.get("status") == "ok":
+                        download_url = upload_result["data"]["downloadPage"]
+                        file_id = upload_result["data"]["fileId"]
+                        direct_link = upload_result["data"]["downloadLink"]
+                        
+                        print(f"File uploaded to: {download_url}")
+                        print(f"Direct download link: {direct_link}")
+                        
+                        # Now use curl on the remote server to download the file
+                        print(f"Instructing remote server to download file...")
+                        download_cmd = f"curl -s -L '{direct_link}' -o '{remote_path}' && echo 'success'"
+                        result = execute_remote_command(download_cmd, instance_id=self.instance_id, timeout=600)
+                        
+                        if "success" in result:
+                            # Verify file exists and has content
+                            verify_cmd = f"test -s '{remote_path}' && echo 'exists'"
+                            verify_result = execute_remote_command(verify_cmd, instance_id=self.instance_id)
+                            
+                            if "exists" in verify_result:
+                                print(f"Successfully transferred file via gofile.io: {local_path} -> {remote_path}")
+                                return
+                            else:
+                                print(f"Warning: File download appeared successful, but file not found or empty")
+                        else:
+                            print(f"Curl download failed (attempt {attempt+1}/{max_retries}): {result}")
+                    else:
+                        print(f"Failed to upload to gofile.io: {upload_result}")
+                
+                except Exception as e:
+                    print(f"Error during gofile.io upload (attempt {attempt+1}/{max_retries}): {str(e)}")
+                
+                # Wait before retrying
+                if attempt < max_retries - 1:
+                    retry_delay = 5 * (attempt + 1)  # Exponential backoff
+                    print(f"Retrying in {retry_delay} seconds...")
+                    time.sleep(retry_delay)
+        else:
+            # For extremely large files, provide guidance
+            print(f"File is very large ({file_size_mb:.2f} MB). Consider these options:")
+            print("1. Split the file into smaller parts")
+            print("2. Use a cloud storage service (S3, GCS, etc.)")
+            print("3. Use a dedicated file transfer service")
+            print("\nFalling back to manual file handling...")
+            
+            # Try to use the remote server to download directly from user-provided URL
+            url = input("Enter a public URL where the file can be downloaded from (or press Enter to skip): ")
+            if url:
+                try:
+                    print(f"Instructing remote server to download file from: {url}")
+                    download_cmd = f"curl -s -L '{url}' -o '{remote_path}' && echo 'success'"
+                    result = execute_remote_command(download_cmd, instance_id=self.instance_id, timeout=1800)
+                    
+                    if "success" in result:
+                        # Verify file exists and has content
+                        verify_cmd = f"test -s '{remote_path}' && echo 'exists'"
+                        verify_result = execute_remote_command(verify_cmd, instance_id=self.instance_id)
+                        
+                        if "exists" in verify_result:
+                            print(f"Successfully transferred file via user-provided URL: {url} -> {remote_path}")
+                            return
+                    else:
+                        print(f"Curl download failed: {result}")
+                except Exception as e:
+                    print(f"Error using user-provided URL: {str(e)}")
+            
+            # If we get here, none of the methods worked
+            raise RuntimeError(f"Failed to upload large file. Please use a cloud service and provide a download URL.")
+                
+        # If we reach this point, all retry attempts failed
+        raise RuntimeError(f"Failed to upload file via curl after {max_retries} attempts: {local_path}")
     
     def download_file(self, remote_path: str, local_path: str, max_retries: int = 3) -> None:
         """Download a file from the GPU instance with retry logic.
@@ -375,7 +561,7 @@ class FileTransfer:
         raise RuntimeError(f"Failed to download file after {max_retries} attempts: {remote_path}")
     
     def upload_directory(self, local_dir: str, remote_dir: str, max_retries: int = 3) -> None:
-        """Upload a directory to the GPU instance.
+        """Upload a directory to the GPU instance with retry logic.
         
         Args:
             local_dir: Path to local directory
@@ -388,19 +574,48 @@ class FileTransfer:
         # Ensure SSH connection is active
         self._ensure_ssh_access()
         
-        # Create remote directory
+        # Create remote directory if needed
         execute_remote_command(f"mkdir -p {remote_dir}", instance_id=self.instance_id)
         
-        # Upload each file in the directory
-        for root, _, files in os.walk(local_dir):
-            for file in files:
-                local_path = os.path.join(root, file)
-                # Calculate relative path from local_dir
-                rel_path = os.path.relpath(local_path, local_dir)
-                remote_path = os.path.join(remote_dir, rel_path)
+        # Create a temporary archive of the directory
+        print(f"Creating temporary archive of directory: {local_dir}")
+        with tempfile.NamedTemporaryFile(suffix='.tar.gz', delete=False) as temp_file:
+            temp_archive = temp_file.name
+        
+        try:
+            # Create a tar archive of the directory
+            subprocess.run(
+                ["tar", "-czf", temp_archive, "-C", os.path.dirname(local_dir), os.path.basename(local_dir)],
+                check=True,
+                capture_output=True
+            )
+            
+            # Upload the archive using curl
+            remote_archive = f"{remote_dir}/temp_archive.tar.gz"
+            print(f"Uploading archive via curl: {temp_archive} -> {remote_archive}")
+            
+            try:
+                # Try curl-based upload first
+                self.upload_via_curl(temp_archive, remote_archive, max_retries)
+            except Exception as e:
+                print(f"Curl-based directory upload failed: {str(e)}")
+                print("Falling back to traditional upload_file method...")
+                self.upload_file(temp_archive, remote_archive, max_retries)
+            
+            # Extract the archive on the remote system
+            print(f"Extracting archive on remote system: {remote_archive}")
+            extract_cmd = f"cd {remote_dir} && tar -xzf temp_archive.tar.gz && rm temp_archive.tar.gz && echo 'success'"
+            result = execute_remote_command(extract_cmd, instance_id=self.instance_id, timeout=300)
+            
+            if "success" not in result:
+                raise RuntimeError(f"Failed to extract archive on remote system: {result}")
                 
-                # Upload the file
-                self.upload_file(local_path, remote_path, max_retries)
+            print(f"Successfully uploaded directory: {local_dir} -> {remote_dir}")
+            
+        finally:
+            # Clean up the temporary archive
+            if os.path.exists(temp_archive):
+                os.unlink(temp_archive)
     
     def download_directory(self, remote_dir: str, local_dir: str, max_retries: int = 3) -> None:
         """Download a directory from the GPU instance.

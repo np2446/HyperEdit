@@ -241,7 +241,7 @@ class VideoEditRequest(BaseModel):
     """Schema for video editing request parameters."""
     video_paths: List[str] = Field(
         ..., 
-        description="List of paths to input videos"
+        description="List of paths to input videos or URLs (http/https) for remote videos"
     )
     edit_prompt: str = Field(
         ..., 
