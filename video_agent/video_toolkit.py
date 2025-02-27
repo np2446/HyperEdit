@@ -32,35 +32,55 @@ class VideoInfo:
         self.path = video_path
         self.cap = cv2.VideoCapture(video_path)
         
+        if not self.cap.isOpened():
+            raise ValueError(f"Could not open video: {video_path}")
+        
         # Basic metadata
         self.width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         self.height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         self.fps = self.cap.get(cv2.CAP_PROP_FPS)
         self.frame_count = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        
+        # Validate properties
+        if self.width <= 0 or self.height <= 0:
+            raise ValueError(f"Invalid video dimensions: {self.width}x{self.height}")
+        if self.fps <= 0:
+            raise ValueError(f"Invalid video framerate: {self.fps}")
+        if self.frame_count <= 0:
+            raise ValueError(f"Invalid frame count: {self.frame_count}")
+            
         self.duration = self.frame_count / self.fps
         
-        # Sample frames for analysis
-        self.samples = self._analyze_samples()
-        self.cap.release()
+        try:
+            # Sample frames for analysis
+            self.samples = self._analyze_samples()
+        finally:
+            # Always release the video capture
+            self.cap.release()
     
     def _analyze_samples(self, num_samples: int = 10) -> List[Dict[str, Any]]:
         """Analyze sample frames from the video."""
         samples = []
         frame_indices = np.linspace(0, self.frame_count - 1, num_samples, dtype=int)
         
+        prev_frame = None
         for idx in frame_indices:
             self.cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
             ret, frame = self.cap.read()
-            if ret:
+            if not ret:
+                print(f"Warning: Could not read frame at index {idx}")
+                continue
+                
+            try:
                 # Calculate average brightness
                 brightness = np.mean(frame)
                 
                 # Calculate motion (if not first frame)
                 motion = 0
-                if len(samples) > 0:
-                    prev_frame = cv2.cvtColor(samples[-1]['frame'], cv2.COLOR_BGR2GRAY)
-                    curr_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                    motion = np.mean(cv2.absdiff(prev_frame, curr_frame))
+                if prev_frame is not None:
+                    prev_gray = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY)
+                    curr_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                    motion = np.mean(cv2.absdiff(prev_gray, curr_gray))
                 
                 samples.append({
                     'frame': frame,
@@ -68,6 +88,14 @@ class VideoInfo:
                     'brightness': brightness,
                     'motion': motion
                 })
+                
+                prev_frame = frame
+            except Exception as e:
+                print(f"Warning: Error analyzing frame at index {idx}: {e}")
+                continue
+        
+        if not samples:
+            raise ValueError("Could not analyze any frames from the video")
         
         return samples
     
@@ -106,6 +134,10 @@ class VideoTool(BaseTool):
         print("\nAnalyzing videos...")
         videos = self._get_input_videos()
         
+        if not videos:
+            print("No videos found in input directory")
+            return {}
+        
         # Clear cache of non-existent videos
         self.analyzed_videos = {
             path: info for path, info in self.analyzed_videos.items()
@@ -117,18 +149,58 @@ class VideoTool(BaseTool):
             if video_path not in self.analyzed_videos:
                 try:
                     print(f"\nAnalyzing {video_path}...")
+                    cap = cv2.VideoCapture(video_path)
+                    if not cap.isOpened():
+                        raise ValueError(f"Could not open video: {video_path}")
+                    
+                    # Basic metadata
+                    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                    fps = cap.get(cv2.CAP_PROP_FPS)
+                    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                    duration = frame_count / fps if fps > 0 else 0
+                    
+                    if width == 0 or height == 0 or fps == 0:
+                        raise ValueError(f"Invalid video properties: width={width}, height={height}, fps={fps}")
+                    
+                    print(f"Video properties: {width}x{height} @ {fps}fps, {duration:.1f}s")
+                    
+                    # Create VideoInfo object with basic metadata
                     self.analyzed_videos[video_path] = VideoInfo(video_path)
                     print(f"Analysis complete: {self.analyzed_videos[video_path]}")
+                    
+                    cap.release()
                 except Exception as e:
                     print(f"Error analyzing video {video_path}: {e}")
+                    # Don't add failed videos to analyzed_videos
+                    continue
+        
+        if not self.analyzed_videos:
+            raise ValueError("No valid videos could be analyzed")
         
         return self.analyzed_videos
     
     def _parse_edit_request(self, query: str) -> Dict[str, Any]:
         """Use LLM to parse natural language query into structured edit request."""
         print("\nParsing edit request...")
+        
+        # Extract video name from the query if specified
+        target_video = None
+        if "Process only the video '" in query:
+            target_video = query.split("Process only the video '")[1].split("'")[0]
+            query = query.split(" with the following instructions: ")[1]
+        
         # Analyze videos first
         video_info = self._analyze_videos()
+        
+        # Filter to only the target video if specified
+        if target_video:
+            video_info = {
+                path: info for path, info in video_info.items()
+                if Path(path).name == target_video
+            }
+            if not video_info:
+                raise ValueError(f"Target video '{target_video}' not found")
         
         # Create video information summary
         video_summaries = []
@@ -152,45 +224,30 @@ Video: {info.path}
 Available input videos:
 {chr(10).join(video_summaries)}
 
-Available effects: {self.knowledge_base.get_supported_effects()}
-Available transitions: {self.knowledge_base.get_supported_transitions()}
-Available compositions: {self.knowledge_base.get_supported_compositions()}
-
 Request: {query}
 
-You must respond with ONLY a valid JSON object in the following format, with no additional text or explanation:
+You must respond with ONLY a valid JSON object in the following format:
 
 {{
-    "output_name": "descriptive_name",
+    "output_name": "videoplayback_captioned",
     "scenes": [
         {{
-            "duration": 10.0,
+            "duration": {list(video_info.values())[0].duration},
             "clips": [
                 {{
-                    "source_video": "input_videos/video1.mp4",
+                    "source_video": "{list(video_info.keys())[0]}",
                     "start_time": 0,
-                    "end_time": 10.0,
-                    "position": {{"x": 0.0, "y": 0.5, "width": 0.5, "height": 1.0}},
-                    "effects": [
-                        {{
-                            "type": "blur",
-                            "params": {{"strength": 5}},
-                            "start_time": 0,
-                            "end_time": 2
-                        }}
-                    ]
+                    "end_time": {list(video_info.values())[0].duration},
+                    "position": {{"x": 0.0, "y": 0.0, "width": 1.0, "height": 1.0}},
+                    "effects": []
                 }}
             ],
-            "transitions": {{
-                "type": "fade",
-                "duration": 1.0
-            }},
             "captions": [
                 {{
-                    "text": "Example Caption",
+                    "text": "Add your caption text here",
                     "start_time": 0,
                     "end_time": 5,
-                    "position": {{"x": 0.5, "y": 0.0, "width": 0.8, "height": 0.1}},
+                    "position": {{"x": 0.5, "y": 0.1, "width": 0.8, "height": 0.1}},
                     "style": {{"font_size": 32, "bold": true}}
                 }}
             ]
@@ -198,12 +255,13 @@ You must respond with ONLY a valid JSON object in the following format, with no 
     ]
 }}
 
-Consider the content analysis when planning:
-- Use brightness levels to determine where effects might be most effective
-- Use motion analysis to plan transitions and effects
-- Consider video durations when planning scene lengths
-- Match resolutions appropriately for compositions
-- For split-screen layouts, use x=0.0 for left side and x=0.5 for right side
+Rules:
+1. Use actual video duration for scene and clip durations (shown in video summaries)
+2. Keep effects array empty unless specifically requested
+3. Adjust caption text, timing, and style based on the request
+4. Use the exact video path as shown in the available videos list
+5. All position values must be between 0.0 and 1.0
+6. output_name should be descriptive of the edit being made
 
 Your response must be ONLY the JSON object, with no other text."""
 
@@ -211,17 +269,40 @@ Your response must be ONLY the JSON object, with no other text."""
         print(f"\nLLM response received:\n{response}")
         
         try:
-            # First try json.loads for safer parsing
-            try:
-                parsed = json.loads(response)
-                print("Successfully parsed response as JSON")
-                return parsed
-            except json.JSONDecodeError:
-                # Fall back to eval if the response has Python bool values (True/False)
-                print("JSON parsing failed, trying eval for Python bool values...")
-                parsed = eval(response)
-                print("Successfully parsed response using eval")
-                return parsed
+            # Parse the JSON response
+            parsed = json.loads(response)
+            print("Successfully parsed response as JSON")
+            
+            # Ensure all required fields are present with defaults
+            for scene in parsed.get("scenes", []):
+                scene.setdefault("duration", -1)
+                scene.setdefault("clips", [])
+                scene.setdefault("captions", [])
+                
+                for clip in scene["clips"]:
+                    clip.setdefault("effects", [])
+                    clip.setdefault("start_time", 0)
+                    clip.setdefault("end_time", -1)
+                    clip.setdefault("position", {
+                        "x": 0.0,
+                        "y": 0.0,
+                        "width": 1.0,
+                        "height": 1.0
+                    })
+                
+                for caption in scene["captions"]:
+                    caption.setdefault("style", {"font_size": 32, "bold": True})
+                    caption.setdefault("start_time", 0)
+                    caption.setdefault("end_time", 5)
+                    caption.setdefault("position", {
+                        "x": 0.5,
+                        "y": 0.1,
+                        "width": 0.8,
+                        "height": 0.1
+                    })
+            
+            return parsed
+            
         except Exception as e:
             print(f"Failed to parse LLM response: {str(e)}")
             raise ValueError(f"Failed to parse LLM response into edit request: {str(e)}")
@@ -232,136 +313,96 @@ Your response must be ONLY the JSON object, with no other text."""
         output_path = str(self.output_dir / f"{parsed_request['output_name']}.mp4")
         print(f"Output path: {output_path}")
         
-        # Create VideoEditRequest
+        # Get absolute paths for input videos and analyze them
+        input_videos = self._get_input_videos()
+        print(f"Input videos: {input_videos}")
+        
+        if not input_videos:
+            raise ValueError("No input videos found")
+        
+        # Analyze videos first
+        try:
+            analyzed_videos = self._analyze_videos()
+            if not analyzed_videos:
+                raise ValueError("No videos could be analyzed successfully")
+        except Exception as e:
+            raise ValueError(f"Failed to analyze videos: {str(e)}")
+        
+        # Create VideoEditRequest with absolute paths
         request = VideoEditRequest(
-            video_paths=self._get_input_videos(),
+            video_paths=input_videos,
             edit_prompt=parsed_request.get('description', ''),
             output_path=output_path
         )
         
-        def convert_position(pos_data: Dict[str, Any]) -> Position:
-            """Convert position data to numeric values."""
-            x = pos_data['x']
-            y = pos_data['y']
-            
-            # Convert string positions to numeric values
-            if isinstance(x, str):
-                x = {
-                    'left': 0.0,
-                    'center': 0.5,
-                    'right': 1.0
-                }.get(x.lower(), 0.5)
-            
-            if isinstance(y, str):
-                y = {
-                    'top': 0.0,
-                    'center': 0.5,
-                    'bottom': 1.0
-                }.get(y.lower(), 0.5)
-            
-            pos = Position(
-                x=float(x),
-                y=float(y),
-                width=float(pos_data['width']),
-                height=float(pos_data['height'])
-            )
-            print(f"Converted position: {pos_data} -> x={pos.x}, y={pos.y}, width={pos.width}, height={pos.height}")
-            return pos
-        
-        # Create scenes
-        scenes = []
-        for scene_idx, scene_data in enumerate(parsed_request['scenes']):
-            print(f"\nProcessing scene {scene_idx + 1}...")
-            clips = []
-            for clip_idx, clip_data in enumerate(scene_data['clips']):
-                print(f"\nProcessing clip {clip_idx + 1}:")
-                print(f"Source video: {clip_data['source_video']}")
+        # Create a simple scene with all videos
+        clips = []
+        for scene_data in parsed_request['scenes']:
+            for clip_data in scene_data['clips']:
+                # Get the video path
+                source_video = clip_data['source_video']
+                print(f"Processing source video: {source_video}")
                 
-                # Get source index from path
-                source_index = self._get_input_videos().index(clip_data['source_video'])
-                print(f"Source index: {source_index}")
+                # Find the matching video in input_videos
+                source_name = Path(source_video).name
+                matching_paths = [p for p in input_videos if Path(p).name == source_name]
+                if not matching_paths:
+                    raise ValueError(f"Video not found: {source_video}")
+                source_video = matching_paths[0]
                 
-                # Create clip effects
-                effects = []
-                for effect_data in clip_data.get('effects', []):
-                    effect = VideoEffect(
-                        type=VideoEffectType[effect_data['type'].upper()],
-                        params=effect_data.get('params', {}),
-                        start_time=effect_data.get('start_time', 0),
-                        end_time=effect_data.get('end_time', -1)
-                    )
-                    print(f"Added effect: {effect.type.name} with params {effect.params}")
-                    effects.append(effect)
+                # Verify the video was analyzed successfully
+                if source_video not in analyzed_videos:
+                    raise ValueError(f"Video could not be analyzed: {source_video}")
                 
-                # Create clip with converted position
+                # Get source index from absolute path
+                source_index = input_videos.index(source_video)
+                print(f"Using video at index {source_index}: {source_video}")
+                
+                # Get video info for duration
+                video_info = analyzed_videos[source_video]
+                if video_info.duration <= 0:
+                    raise ValueError(f"Invalid video duration for {source_video}: {video_info.duration}")
+                
+                # Create clip with position
                 clip = ClipSegment(
                     source_index=source_index,
                     start_time=clip_data.get('start_time', 0),
-                    end_time=clip_data.get('end_time', -1),
-                    position=convert_position(clip_data['position']),
-                    effects=effects
+                    end_time=video_info.duration if clip_data.get('end_time', -1) < 0 else clip_data['end_time'],
+                    position=Position(
+                        x=float(clip_data['position']['x']),
+                        y=float(clip_data['position']['y']),
+                        width=float(clip_data['position']['width']),
+                        height=float(clip_data['position']['height'])
+                    ),
+                    effects=[]  # Keep effects empty for now
                 )
                 print(f"Created clip segment: {clip}")
                 clips.append(clip)
-            
-            # Create scene transitions
-            transition = None
-            if 'transitions' in scene_data:
-                transition = TransitionEffect(
-                    type=TransitionType[scene_data['transitions']['type'].upper()],
-                    duration=scene_data['transitions'].get('duration', 1.0)
-                )
-                print(f"Added transition: {transition.type.name} ({transition.duration}s)")
-            
-            # Create scene captions
-            captions = []
-            for caption_data in scene_data.get('captions', []):
-                caption = Caption(
-                    text=caption_data['text'],
-                    start_time=caption_data.get('start_time', 0),
-                    end_time=caption_data.get('end_time', -1),
-                    position=convert_position(caption_data['position']),
-                    style=TextStyle(**caption_data.get('style', {}))
-                )
-                print(f"Added caption: {caption.text} at position {caption.position}")
-                captions.append(caption)
-            
-            # Create scene
-            scene = Scene(
-                duration=scene_data['duration'],
-                clips=clips,
-                transition_out=transition,
-                captions=captions
-            )
-            print(f"Created scene with duration {scene.duration}s and {len(clips)} clips")
-            scenes.append(scene)
         
-        # Estimate GPU requirements
-        effects = []
-        transitions = []
-        compositions = []
-        for scene in scenes:
-            for clip in scene.clips:
-                effects.extend([e.type.name.lower() for e in clip.effects])
-            if scene.transition_out:
-                transitions.append(scene.transition_out.type.name.lower())
-            if len(scene.clips) > 1:
-                compositions.append('split_screen')
+        if not clips:
+            raise ValueError("No valid clips could be created")
         
-        gpu_reqs = self.knowledge_base.estimate_gpu_requirements(
-            effects=list(set(effects)),
-            transitions=list(set(transitions)),
-            compositions=list(set(compositions))
+        # Calculate total duration from clips
+        max_duration = max((clip.end_time for clip in clips), default=0)
+        if max_duration <= 0:
+            raise ValueError("Invalid scene duration")
+        
+        # Create scene with clips
+        scene = Scene(
+            duration=max_duration,
+            clips=clips,
+            transition_out=None,  # No transitions for now
+            captions=[]  # No captions for now
         )
-        print(f"\nEstimated GPU requirements: {gpu_reqs}")
+        print(f"Created scene with duration {scene.duration}s and {len(clips)} clips")
         
-        # Create edit plan
+        # Create edit plan with minimal GPU requirements
         plan = VideoEditPlan(
-            scenes=scenes,
-            estimated_gpu_requirements=gpu_reqs,
-            estimated_duration=sum(s.duration for s in scenes)
+            scenes=[scene],
+            estimated_gpu_requirements={"min_vram_gb": 4.0, "gpu_count": 1},
+            estimated_duration=max_duration
         )
-        print(f"\nCreated edit plan with {len(scenes)} scenes, estimated duration: {plan.estimated_duration}s")
+        print(f"\nCreated edit plan with {len(plan.scenes)} scenes")
         
         return request, plan
     

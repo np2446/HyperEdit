@@ -34,34 +34,25 @@ export default function FileUpload({ onUpload }: FileUploadProps) {
   const validateFiles = (files: FileList): boolean => {
     setValidationError(null)
     
-    // Check if too many files
-    if (files.length > 1) {
-      setValidationError({
-        message: `Please upload only one video file at a time.`,
-        type: 'count'
-      })
-      return false
-    }
-    
-    // Check file
-    const file = files[0]
+    // Check each file
+    for (const file of Array.from(files)) {
+      // Check file type
+      if (!isValidFileType(file)) {
+        setValidationError({
+          message: `Unsupported file type: ${file.type}. Please upload MP4, MOV, or AVI files.`,
+          type: 'type'
+        })
+        return false
+      }
       
-    // Check file type
-    if (!isValidFileType(file)) {
-      setValidationError({
-        message: `Unsupported file type: ${file.type}. Please upload MP4, MOV, or AVI files.`,
-        type: 'type'
-      })
-      return false
-    }
-    
-    // Check file size
-    if (!isValidFileSize(file)) {
-      setValidationError({
-        message: `File ${file.name} is too large (${formatFileSize(file.size)}). Maximum size is ${config.upload.maxFileSize}MB.`,
-        type: 'size'
-      })
-      return false
+      // Check file size
+      if (!isValidFileSize(file)) {
+        setValidationError({
+          message: `File ${file.name} is too large (${formatFileSize(file.size)}). Maximum size is ${config.upload.maxFileSize}MB.`,
+          type: 'size'
+        })
+        return false
+      }
     }
     
     return true
@@ -111,7 +102,7 @@ export default function FileUpload({ onUpload }: FileUploadProps) {
           onChange={handleFileChange} 
           className="hidden" 
           accept={config.upload.allowedFileTypes.join(',')}
-          multiple={false}
+          multiple={true}
         />
 
         <Upload className="h-10 w-10 mx-auto mb-4 text-zinc-500" />

@@ -113,11 +113,12 @@ export default function VideoEditor() {
       const formData = new FormData()
       formData.append("prompt", prompt)
       
-      // Add the first video file only
-      const clip = clips[0]
-      if (clip.file) {
-        formData.append("videos", clip.file)
-      }
+      // Add all video files
+      clips.forEach((clip, index) => {
+        if (clip.file) {
+          formData.append("videos", clip.file)
+        }
+      })
 
       // Call the backend API
       const response = await fetch("/api/process-video", {
@@ -172,8 +173,8 @@ export default function VideoEditor() {
 
           {clips.length > 0 && (
             <div className="space-y-2">
-              <h2 className="text-xl font-semibold text-white">Your Video</h2>
-              <ClipList clips={clips.slice(0, 1)} onRemove={removeClip} />
+              <h2 className="text-xl font-semibold text-white">Your Videos</h2>
+              <ClipList clips={clips} onRemove={removeClip} />
             </div>
           )}
 
