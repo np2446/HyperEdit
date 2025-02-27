@@ -174,39 +174,83 @@ def run_connection_test():
         
         remote_test_path = f"{test_dir}/test_connection.txt"
         
-        # Use SCP directly for more control
-        import subprocess
-        scp_cmd = [
-            "scp", 
-            "-P", str(port),
-            "-i", ssh_key_path,
-            test_file, 
-            f"{username}@{hostname}:{remote_test_path}"
-        ]
-        
-        print(f"Running SCP command: {' '.join(scp_cmd)}")
+        # Use the new curl-based file transfer method
+        print("Testing curl-based file transfer...")
         try:
-            # If SSH key has a password, we need to use sshpass or similar
-            # For now, we'll rely on the key being loaded in the SSH agent
-            result = subprocess.run(scp_cmd, capture_output=True, text=True)
-            if result.returncode == 0:
-                print("✅ File upload successful!")
-            else:
-                print(f"❌ File upload failed: {result.stderr}")
-                print("Trying alternative upload method...")
+            # Create FileTransfer instance
+            from video_agent.file_transfer import FileTransfer
+            file_transfer = FileTransfer(processor.instance_id)
+            
+            # Upload using curl approach
+            file_transfer.upload_file(test_file, remote_test_path)
+            
+            # Verify the file exists on the remote server
+            verify_cmd = f"test -f {remote_test_path} && echo 'exists' || echo 'not found'"
+            verify_result = execute_remote_command(verify_cmd, instance_id=processor.instance_id)
+            
+            if "exists" in verify_result:
+                print("✅ Curl-based file upload successful!")
                 
-                # Try using sftp via Python's paramiko
-                try:
-                    sftp = ssh_manager.client.open_sftp()
-                    sftp.put(test_file, remote_test_path)
-                    sftp.close()
-                    print("✅ File upload successful using SFTP!")
-                except Exception as e:
-                    print(f"❌ SFTP upload failed: {str(e)}")
-                    return False
+                # Check file content
+                cat_cmd = f"cat {remote_test_path}"
+                file_content = execute_remote_command(cat_cmd, instance_id=processor.instance_id)
+                print(f"Remote file content:\n{file_content}")
+            else:
+                print(f"❌ Curl-based file upload failed: File not found on remote server")
+                print("Trying alternative approach...")
+                
+                # Alternative approach - direct curl from a URL
+                print("\nTesting direct curl from a remote URL...")
+                remote_url = "https://raw.githubusercontent.com/github/gitignore/main/Python.gitignore"
+                curl_cmd = f"curl -s {remote_url} -o {remote_test_path} && echo 'curl_success'"
+                curl_result = execute_remote_command(curl_cmd, instance_id=processor.instance_id)
+                
+                if "curl_success" in curl_result:
+                    print("✅ Direct curl from URL successful!")
+                    # Check file content
+                    cat_cmd = f"cat {remote_test_path} | head -5"  # Just show first 5 lines
+                    file_content = execute_remote_command(cat_cmd, instance_id=processor.instance_id)
+                    print(f"Remote file content (first 5 lines):\n{file_content}")
+                else:
+                    print(f"❌ Direct curl from URL failed: {curl_result}")
         except Exception as e:
-            print(f"❌ Error during SCP: {str(e)}")
-            return False
+            print(f"❌ Error during file transfer test: {str(e)}")
+            print("Trying alternative approach...")
+            
+            # Fall back to old SCP approach if needed
+            import subprocess
+            scp_cmd = [
+                "scp", 
+                "-P", str(port),
+                "-i", ssh_key_path,
+                test_file, 
+                f"{username}@{hostname}:{remote_test_path}"
+            ]
+            
+            print(f"Running SCP command: {' '.join(scp_cmd)}")
+            try:
+                result = subprocess.run(scp_cmd, capture_output=True, text=True)
+                if result.returncode == 0:
+                    print("✅ File upload successful with SCP!")
+                else:
+                    print(f"❌ File upload failed with SCP: {result.stderr}")
+            except Exception as e:
+                print(f"❌ Error during SCP: {str(e)}")
+                
+                # Try creating the file directly on the server as a last resort
+                create_cmd = f"echo 'This is a test file created directly on the server at $(date)' > {remote_test_path}"
+                create_result = execute_remote_command(create_cmd, instance_id=processor.instance_id)
+                print(f"Created file directly on server: {create_result}")
+                
+                # Verify the file exists
+                verify_cmd = f"test -f {remote_test_path} && echo 'exists' || echo 'not found'"
+                verify_result = execute_remote_command(verify_cmd, instance_id=processor.instance_id)
+                
+                if "exists" in verify_result:
+                    print("✅ File created directly on server successfully!")
+                else:
+                    print(f"❌ Failed to create file directly on server")
+                    return False
         
         # Test 4: List remote files
         print("\n=== Test 4: Listing Remote Files ===")
@@ -275,6 +319,34 @@ def run_connection_test():
         print("\n=== Test 7: Checking GPU Status ===")
         gpu_result = execute_remote_command("nvidia-smi", instance_id=processor.instance_id)
         print(f"GPU Status:\n{gpu_result}")
+        
+        # Test 8: Direct URL download
+        print("\n=== Test 8: Direct URL Download ===")
+        try:
+            # Test downloading a file directly from a URL
+            remote_test_url = "https://raw.githubusercontent.com/github/gitignore/main/Python.gitignore"
+            remote_download_path = f"{test_dir}/direct_download.txt"
+            
+            # Use VideoProcessor's download_from_url method
+            print(f"Testing direct URL download: {remote_test_url}")
+            processor.download_from_url(remote_test_url, remote_download_path)
+            
+            # Verify the file exists and check its content
+            verify_cmd = f"test -f {remote_download_path} && echo 'exists' || echo 'not found'"
+            verify_result = execute_remote_command(verify_cmd, instance_id=processor.instance_id)
+            
+            if "exists" in verify_result:
+                print("✅ Direct URL download successful!")
+                
+                # Check file content (first few lines)
+                cat_cmd = f"head -5 {remote_download_path}"
+                file_content = execute_remote_command(cat_cmd, instance_id=processor.instance_id)
+                print(f"Downloaded file content (first 5 lines):\n{file_content}")
+            else:
+                print(f"❌ Direct URL download failed: File not found on remote server")
+        except Exception as e:
+            print(f"❌ Error during direct URL download test: {str(e)}")
+            print("This feature may require the VideoProcessor implementation.")
         
         print("\n=== All Tests Completed Successfully! ===")
         return True

@@ -24,7 +24,10 @@ async def main():
     parser.add_argument("--model", help="Specific LLM model to use")
     parser.add_argument("--prompt", default="Create a video that transitions from grayscale to color", 
                         help="Prompt for the video editing task")
-    parser.add_argument("--videos", nargs="*", help="Paths to input videos (if not provided, will generate test videos)")
+    parser.add_argument("--videos", nargs="*", 
+                        help="Paths to input videos or URLs (http/https) for remote videos")
+    parser.add_argument("--video-urls", nargs="*", 
+                        help="URLs for remote videos (alternative to --videos; will be downloaded directly on the GPU)")
     parser.add_argument("--log", help="Path to log file")
     args = parser.parse_args()
     
@@ -36,13 +39,22 @@ async def main():
     print("VideoAgentProcessor Demo")
     print("=" * 80)
     
+    # Collect video sources (local paths or URLs)
+    video_sources = []
+    if args.videos:
+        video_sources.extend(args.videos)
+    if args.video_urls:
+        video_sources.extend(args.video_urls)
+    
     # Print configuration
     print("\nConfiguration:")
     print(f"- Local mode: {args.local}")
     print(f"- LLM provider: {args.llm}")
     print(f"- LLM model: {args.model or 'default'}")
     print(f"- Prompt: {args.prompt}")
-    print(f"- Input videos: {args.videos or 'Will generate test videos'}")
+    print(f"- Input videos: {video_sources or 'Will generate test videos'}")
+    if args.video_urls:
+        print(f"- Video URLs: {args.video_urls}")
     print(f"- Log file: {args.log or 'None (console only)'}")
     
     # Check for required environment variables
@@ -85,7 +97,7 @@ async def main():
     try:
         # Process videos
         print("\nProcessing videos...")
-        result = await processor.process_videos(args.prompt, args.videos)
+        result = await processor.process_videos(args.prompt, video_sources)
         
         # Print result
         print("\nResult:")

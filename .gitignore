@@ -72,4 +72,11 @@ jsonoutputs/
 
 test_outputs/
 
+# frontend 
+frontend/node_modules/
+frontend/.next/
+frontend/dist/
+frontend/build/
+frontend/src/
+frontend/package-lock.json
 

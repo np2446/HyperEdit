@@ -766,8 +766,25 @@ class VideoProcessor:
                 remote_paths = []
                 for i, path in enumerate(request.video_paths):
                     remote_path = f"{self.workspace_dir}/source_{i}{Path(path).suffix}"
-                    self.file_transfer.upload_file(path, remote_path)
-                    remote_paths.append(remote_path)
+                    
+                    # Check if the path is a URL
+                    if self._is_url(path):
+                        print(f"Detected URL for video source {i}: {path}")
+                        try:
+                            # Download directly to the GPU instance
+                            self.download_from_url(path, remote_path)
+                            remote_paths.append(remote_path)
+                            continue
+                        except Exception as e:
+                            print(f"Warning: Failed to download from URL: {str(e)}")
+                            print("Attempting to fetch video through local machine instead...")
+                    
+                    # If not a URL or URL download failed, try traditional file transfer
+                    if os.path.exists(path):
+                        self.file_transfer.upload_file(path, remote_path)
+                        remote_paths.append(remote_path)
+                    else:
+                        raise FileNotFoundError(f"Video source not found: {path}")
                 
                 # Process each scene
                 scene_outputs = []
@@ -916,3 +933,65 @@ class VideoProcessor:
                         self.__class__.active_instances.remove(self.instance_id)
                     self.instance_id = None
                     self.current_instance = None 
+    
+    def download_from_url(self, url: str, destination_path: str, timeout: int = 600) -> str:
+        """Download a file directly from a URL to the GPU instance.
+        
+        This is useful for large files like videos that would be inefficient to
+        transfer through the local machine.
+        
+        Args:
+            url: Public URL to download the file from
+            destination_path: Path on the GPU instance to save the file
+            timeout: Maximum time in seconds to wait for download
+            
+        Returns:
+            str: The path to the downloaded file on the instance
+        """
+        if self.local_mode:
+            # For local mode, download to local machine
+            import urllib.request
+            os.makedirs(os.path.dirname(destination_path), exist_ok=True)
+            urllib.request.urlretrieve(url, destination_path)
+            return destination_path
+            
+        # For remote mode, have the GPU instance download directly
+        if not self.current_instance or not self.file_transfer:
+            raise RuntimeError("GPU environment not set up. Call setup_gpu_environment first.")
+        
+        # Create directory if needed
+        dest_dir = str(Path(destination_path).parent)
+        execute_remote_command(f"mkdir -p {dest_dir}", instance_id=self.instance_id)
+        
+        # Use curl to download the file
+        print(f"Downloading file from URL: {url}")
+        download_cmd = f"curl -s -L '{url}' -o '{destination_path}' && echo 'success'"
+        result = execute_remote_command(download_cmd, instance_id=self.instance_id, timeout=timeout)
+        
+        if "success" not in result:
+            raise RuntimeError(f"Failed to download file from URL: {url}")
+            
+        # Verify the file exists and has content
+        verify_cmd = f"test -s '{destination_path}' && echo 'exists'"
+        verify_result = execute_remote_command(verify_cmd, instance_id=self.instance_id)
+        
+        if "exists" not in verify_result:
+            raise RuntimeError(f"Downloaded file not found or empty: {destination_path}")
+            
+        # Get file size for confirmation
+        size_cmd = f"du -h '{destination_path}' | cut -f1"
+        size_result = execute_remote_command(size_cmd, instance_id=self.instance_id)
+        print(f"Successfully downloaded file ({size_result.strip()}) to: {destination_path}")
+        
+        return destination_path 
+    
+    def _is_url(self, path: str) -> bool:
+        """Check if a path is a URL.
+        
+        Args:
+            path: Path to check
+            
+        Returns:
+            bool: True if path is a URL, False otherwise
+        """
+        return path.startswith(('http://', 'https://', 'ftp://')) 
