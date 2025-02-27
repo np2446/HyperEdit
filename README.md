@@ -93,6 +93,19 @@ The video agent can be used in two ways:
    )
    ```
 
+### To run the frontend
+
+```bash
+cd frontend
+npm run dev 
+```
+
+#### To run the backend
+
+```bash
+poetry run python -m uvicorn api.main:app --reload
+```
+
 2. **Through AgentKit**
    ```python
    # In your agent configuration

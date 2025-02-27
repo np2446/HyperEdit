@@ -16,6 +16,8 @@ from pydantic import Field
 import asyncio
 from langchain.schema import HumanMessage
 import json
+import aiohttp
+import logging
 
 from .video_processor import VideoProcessor, GPURequirements
 from .video_models import (
@@ -32,55 +34,35 @@ class VideoInfo:
         self.path = video_path
         self.cap = cv2.VideoCapture(video_path)
         
-        if not self.cap.isOpened():
-            raise ValueError(f"Could not open video: {video_path}")
-        
         # Basic metadata
         self.width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         self.height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         self.fps = self.cap.get(cv2.CAP_PROP_FPS)
         self.frame_count = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        
-        # Validate properties
-        if self.width <= 0 or self.height <= 0:
-            raise ValueError(f"Invalid video dimensions: {self.width}x{self.height}")
-        if self.fps <= 0:
-            raise ValueError(f"Invalid video framerate: {self.fps}")
-        if self.frame_count <= 0:
-            raise ValueError(f"Invalid frame count: {self.frame_count}")
-            
         self.duration = self.frame_count / self.fps
         
-        try:
-            # Sample frames for analysis
-            self.samples = self._analyze_samples()
-        finally:
-            # Always release the video capture
-            self.cap.release()
+        # Sample frames for analysis
+        self.samples = self._analyze_samples()
+        self.cap.release()
     
     def _analyze_samples(self, num_samples: int = 10) -> List[Dict[str, Any]]:
         """Analyze sample frames from the video."""
         samples = []
         frame_indices = np.linspace(0, self.frame_count - 1, num_samples, dtype=int)
         
-        prev_frame = None
         for idx in frame_indices:
             self.cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
             ret, frame = self.cap.read()
-            if not ret:
-                print(f"Warning: Could not read frame at index {idx}")
-                continue
-                
-            try:
+            if ret:
                 # Calculate average brightness
                 brightness = np.mean(frame)
                 
                 # Calculate motion (if not first frame)
                 motion = 0
-                if prev_frame is not None:
-                    prev_gray = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY)
-                    curr_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                    motion = np.mean(cv2.absdiff(prev_gray, curr_gray))
+                if len(samples) > 0:
+                    prev_frame = cv2.cvtColor(samples[-1]['frame'], cv2.COLOR_BGR2GRAY)
+                    curr_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                    motion = np.mean(cv2.absdiff(prev_frame, curr_frame))
                 
                 samples.append({
                     'frame': frame,
@@ -88,14 +70,6 @@ class VideoInfo:
                     'brightness': brightness,
                     'motion': motion
                 })
-                
-                prev_frame = frame
-            except Exception as e:
-                print(f"Warning: Error analyzing frame at index {idx}: {e}")
-                continue
-        
-        if not samples:
-            raise ValueError("Could not analyze any frames from the video")
         
         return samples
     
@@ -112,6 +86,7 @@ class VideoTool(BaseTool):
     analyzed_videos: Dict[str, VideoInfo] = Field(default_factory=dict)
     input_dir: Path = Field(default_factory=lambda: Path("input_videos"))
     output_dir: Path = Field(default_factory=lambda: Path("test_outputs"))
+    verifier_url: str = Field(default="http://localhost:8001/verify")
     
     def __init__(self, **data):
         super().__init__(**data)
@@ -134,10 +109,6 @@ class VideoTool(BaseTool):
         print("\nAnalyzing videos...")
         videos = self._get_input_videos()
         
-        if not videos:
-            print("No videos found in input directory")
-            return {}
-        
         # Clear cache of non-existent videos
         self.analyzed_videos = {
             path: info for path, info in self.analyzed_videos.items()
@@ -149,37 +120,50 @@ class VideoTool(BaseTool):
             if video_path not in self.analyzed_videos:
                 try:
                     print(f"\nAnalyzing {video_path}...")
-                    cap = cv2.VideoCapture(video_path)
-                    if not cap.isOpened():
-                        raise ValueError(f"Could not open video: {video_path}")
-                    
-                    # Basic metadata
-                    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-                    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                    fps = cap.get(cv2.CAP_PROP_FPS)
-                    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-                    duration = frame_count / fps if fps > 0 else 0
-                    
-                    if width == 0 or height == 0 or fps == 0:
-                        raise ValueError(f"Invalid video properties: width={width}, height={height}, fps={fps}")
-                    
-                    print(f"Video properties: {width}x{height} @ {fps}fps, {duration:.1f}s")
-                    
-                    # Create VideoInfo object with basic metadata
                     self.analyzed_videos[video_path] = VideoInfo(video_path)
                     print(f"Analysis complete: {self.analyzed_videos[video_path]}")
-                    
-                    cap.release()
                 except Exception as e:
                     print(f"Error analyzing video {video_path}: {e}")
-                    # Don't add failed videos to analyzed_videos
-                    continue
-        
-        if not self.analyzed_videos:
-            raise ValueError("No valid videos could be analyzed")
         
         return self.analyzed_videos
     
+    async def _verify_llm_response(self, prompt: str, response: str) -> bool:
+        """Verify LLM response using the inference verifier."""
+        try:
+            async with aiohttp.ClientSession() as session:
+                payload = {
+                    "prompt": prompt,
+                    "response": response,
+                    "model": "claude-3-sonnet-20240229",
+                    "context": "Video editing assistant processing user request"
+                }
+                async with session.post(self.verifier_url, json=payload) as resp:
+                    if resp.status == 200:
+                        result = await resp.json()
+                        print(f"Verification result: {result}")
+                        return result.get("is_valid", False)
+                    else:
+                        print(f"Verification failed with status {resp.status}")
+                        return False
+        except Exception as e:
+            print(f"Error during verification: {str(e)}")
+            return False
+
+    async def _get_verified_llm_response(self, prompt: str, max_attempts: int = 3) -> str:
+        """Get LLM response and verify it with the inference verifier."""
+        for attempt in range(max_attempts):
+            response = self.llm.invoke(prompt).content
+            print(f"\nLLM response received (attempt {attempt + 1}):\n{response}")
+            
+            is_valid = await self._verify_llm_response(prompt, response)
+            if is_valid:
+                print("Response verified successfully")
+                return response
+            else:
+                print(f"Response verification failed, attempt {attempt + 1} of {max_attempts}")
+        
+        raise ValueError("Failed to get a verified response after maximum attempts")
+
     def _parse_edit_request(self, query: str) -> Dict[str, Any]:
         """Use LLM to parse natural language query into structured edit request."""
         print("\nParsing edit request...")
@@ -265,8 +249,9 @@ Rules:
 
 Your response must be ONLY the JSON object, with no other text."""
 
-        response = self.llm.invoke(prompt).content
-        print(f"\nLLM response received:\n{response}")
+        # Get verified response from LLM
+        loop = asyncio.get_event_loop()
+        response = loop.run_until_complete(self._get_verified_llm_response(prompt))
         
         try:
             # Parse the JSON response
@@ -339,45 +324,63 @@ Your response must be ONLY the JSON object, with no other text."""
         clips = []
         for scene_data in parsed_request['scenes']:
             for clip_data in scene_data['clips']:
-                # Get the video path
-                source_video = clip_data['source_video']
-                print(f"Processing source video: {source_video}")
-                
-                # Find the matching video in input_videos
-                source_name = Path(source_video).name
-                matching_paths = [p for p in input_videos if Path(p).name == source_name]
-                if not matching_paths:
-                    raise ValueError(f"Video not found: {source_video}")
-                source_video = matching_paths[0]
-                
-                # Verify the video was analyzed successfully
-                if source_video not in analyzed_videos:
-                    raise ValueError(f"Video could not be analyzed: {source_video}")
-                
-                # Get source index from absolute path
-                source_index = input_videos.index(source_video)
-                print(f"Using video at index {source_index}: {source_video}")
-                
-                # Get video info for duration
-                video_info = analyzed_videos[source_video]
-                if video_info.duration <= 0:
-                    raise ValueError(f"Invalid video duration for {source_video}: {video_info.duration}")
-                
-                # Create clip with position
-                clip = ClipSegment(
-                    source_index=source_index,
-                    start_time=clip_data.get('start_time', 0),
-                    end_time=video_info.duration if clip_data.get('end_time', -1) < 0 else clip_data['end_time'],
-                    position=Position(
-                        x=float(clip_data['position']['x']),
-                        y=float(clip_data['position']['y']),
-                        width=float(clip_data['position']['width']),
-                        height=float(clip_data['position']['height'])
-                    ),
-                    effects=[]  # Keep effects empty for now
-                )
-                print(f"Created clip segment: {clip}")
-                clips.append(clip)
+                try:
+                    # Get the video path
+                    source_video = clip_data['source_video']
+                    print(f"Processing source video: {source_video}")
+                    
+                    # Find the matching video in input_videos
+                    source_name = Path(source_video).name
+                    matching_paths = [p for p in input_videos if Path(p).name == source_name]
+                    if not matching_paths:
+                        raise ValueError(f"Video not found: {source_video}")
+                    source_video = matching_paths[0]
+                    
+                    # Verify the video was analyzed successfully
+                    if source_video not in analyzed_videos:
+                        raise ValueError(f"Video could not be analyzed: {source_video}")
+                    
+                    # Get source index from absolute path
+                    source_index = input_videos.index(source_video)
+                    print(f"Using video at index {source_index}: {source_video}")
+                    
+                    # Get video info for duration
+                    video_info = analyzed_videos[source_video]
+                    if video_info.duration <= 0:
+                        raise ValueError(f"Invalid video duration for {source_video}: {video_info.duration}")
+                    
+                    # Calculate clip timing
+                    start_time = clip_data.get('start_time', 0)
+                    end_time = video_info.duration if clip_data.get('end_time', -1) < 0 else clip_data['end_time']
+                    
+                    # Create clip with position and audio effects
+                    clip = ClipSegment(
+                        source_index=source_index,
+                        start_time=start_time,
+                        end_time=end_time,
+                        position=Position(
+                            x=float(clip_data['position']['x']),
+                            y=float(clip_data['position']['y']),
+                            width=float(clip_data['position']['width']),
+                            height=float(clip_data['position']['height'])
+                        ),
+                        effects=[],  # Keep video effects empty for now
+                        audio_effects=[
+                            AudioEffect(
+                                type=AudioEffectType.VOLUME,
+                                params={"volume": 1.0 / len(scene_data['clips'])},  # Normalize volume based on number of clips
+                                start_time=start_time,  # Add start time for audio effect
+                                end_time=end_time,  # Add end time for audio effect
+                                fade_in=0.5,  # Add a small fade in
+                                fade_out=0.5  # Add a small fade out
+                            )
+                        ]
+                    )
+                    print(f"Created clip segment: {clip}")
+                    clips.append(clip)
+                except Exception as e:
+                    print(f"Error processing clip: {str(e)}")
+                    continue
         
         if not clips:
             raise ValueError("No valid clips could be created")
