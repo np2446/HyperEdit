@@ -17,6 +17,13 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    if (!prompt || prompt.trim() === '') {
+      return NextResponse.json(
+        { error: 'No prompt provided' },
+        { status: 400 }
+      );
+    }
+
     // Create input_videos directory if it doesn't exist
     const inputDir = path.join(process.cwd(), '..', 'input_videos');
     await mkdir(inputDir, { recursive: true });
@@ -39,9 +46,10 @@ export async function POST(request: NextRequest) {
       backendFormData.append('videos', name);
     });
 
-    // Log the form data being sent
-    console.log('Sending to backend - prompt:', prompt);
-    console.log('Sending to backend - videos:', Array.from(backendFormData.getAll('videos')));
+    // Log the request details
+    console.log('=== Sending request to backend ===');
+    console.log('Prompt:', prompt);
+    console.log('Videos:', videoNames);
 
     // Call the FastAPI backend
     const response = await fetch('http://localhost:8000/process-videos', {
@@ -60,7 +68,14 @@ export async function POST(request: NextRequest) {
 
     const result = await response.json();
     console.log('Backend response:', result);
-    return NextResponse.json(result);
+
+    // Return the complete response including verification details
+    return NextResponse.json({
+      status: result.status,
+      message: result.message,
+      output_path: result.output_path,
+      verification: result.verification
+    });
   } catch (error) {
     console.error('Error processing video:', error);
     return NextResponse.json(

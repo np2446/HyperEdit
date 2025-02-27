@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
-import { Upload, Play } from "lucide-react"
+import { Upload, Play, ExternalLink } from "lucide-react"
 import FileUpload from "@/components/file-upload"
 import ClipList from "@/components/clip-list"
 import LoadingAnimation from "@/components/loading-animation"
@@ -11,6 +11,7 @@ import VideoPreview from "@/components/video-preview"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Label } from "@/components/ui/label"
 import { config } from "@/config"
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 
 export type VideoClip = {
   id: string
@@ -21,11 +22,19 @@ export type VideoClip = {
   file?: File
 }
 
+interface VerificationDetails {
+  verification_id: string
+  chain_url: string
+  timestamp: string
+  is_valid: boolean
+}
+
 interface TaskStatus {
   status: "processing" | "completed" | "failed"
   message: string
   video_url?: string
   result?: string
+  verification?: VerificationDetails
 }
 
 export default function VideoEditor() {
@@ -38,6 +47,7 @@ export default function VideoEditor() {
   const [taskId, setTaskId] = useState<string | null>(null)
   const [statusMessage, setStatusMessage] = useState<string | null>(null)
   const [processingProgress, setProcessingProgress] = useState<number>(0)
+  const [verificationDetails, setVerificationDetails] = useState<VerificationDetails | null>(null)
 
   // Poll for task status when taskId changes
   useEffect(() => {
@@ -107,6 +117,7 @@ export default function VideoEditor() {
     setTaskId(null)
     setStatusMessage(null)
     setProcessingProgress(0)
+    setVerificationDetails(null)
 
     try {
       // Create FormData to send files to the backend
@@ -137,6 +148,11 @@ export default function VideoEditor() {
       // Show the processed video
       if (data.output_path) {
         setProcessedVideo(`/test_outputs/${data.output_path.split('/').pop()}`)
+      }
+
+      // Set verification details if present
+      if (data.verification) {
+        setVerificationDetails(data.verification)
       }
     } catch (err) {
       console.error("Error processing video:", err)
@@ -187,6 +203,28 @@ export default function VideoEditor() {
             Process Video
           </Button>
           
+          {verificationDetails && (
+            <Alert className="bg-emerald-500/10 border-emerald-500/20 text-emerald-500">
+              <AlertTitle className="flex items-center gap-2">
+                <span>✓ LLM Response Verified On-Chain</span>
+              </AlertTitle>
+              <AlertDescription className="mt-2">
+                <div className="space-y-2">
+                  <p>Verification ID: {verificationDetails.verification_id}</p>
+                  <p>Timestamp: {new Date(verificationDetails.timestamp).toLocaleString()}</p>
+                  <a
+                    href={verificationDetails.chain_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-2 text-emerald-500 hover:text-emerald-400"
+                  >
+                    View on Chain <ExternalLink className="h-4 w-4" />
+                  </a>
+                </div>
+              </AlertDescription>
+            </Alert>
+          )}
+
           {error && (
             <div className="text-red-500 text-sm mt-2 p-2 bg-red-500/10 rounded border border-red-500/20">
               {error}

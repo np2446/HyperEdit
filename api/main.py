@@ -5,6 +5,8 @@ import uvicorn
 from dotenv import load_dotenv
 import logging
 import traceback
+import json
+import asyncio
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -68,6 +70,7 @@ async def process_videos(
 ):
     """Process one or more videos using the Hyperbolic agent."""
     try:
+        logger.info("\n=== Starting Video Processing ===")
         logger.info(f"Processing videos: {videos}")
         logger.info(f"Prompt: {prompt}")
         
@@ -77,35 +80,47 @@ async def process_videos(
             input_path = input_dir / video_name
             logger.info(f"Checking video path: {input_path} (exists: {input_path.exists()})")
             if not input_path.exists():
-                raise HTTPException(status_code=404, detail=f"Video {video_name} not found at {input_path}")
+                error_msg = f"Video {video_name} not found at {input_path}"
+                logger.error(error_msg)
+                raise HTTPException(status_code=404, detail=error_msg)
             logger.info(f"Found input video: {input_path}")
             video_paths.append(str(input_path))
 
         # Initialize video tool with processor
         logger.info("Initializing video tool...")
-        video_tool = VideoTool(
-            llm=llm,
-            processor=VideoProcessor(local_mode=use_local),
-            input_dir=input_dir,
-            output_dir=output_dir
-        )
+        try:
+            video_tool = VideoTool(
+                llm=llm,
+                processor=VideoProcessor(local_mode=use_local),
+                input_dir=input_dir,
+                output_dir=output_dir
+            )
+        except Exception as e:
+            logger.error(f"Failed to initialize VideoTool: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise HTTPException(status_code=500, detail=f"Failed to initialize video processor: {str(e)}")
         
         # Set up GPU requirements
         logger.info(f"Setting up GPU environment (local_mode={use_local})...")
-        if not use_local:
-            video_tool.processor.setup_gpu_environment(
-                GPURequirements(
-                    gpu_type="RTX",
-                    num_gpus=1,
-                    min_vram_gb=4.0,
-                    disk_size=10,
-                    memory=16
+        try:
+            if not use_local:
+                video_tool.processor.setup_gpu_environment(
+                    GPURequirements(
+                        gpu_type="RTX",
+                        num_gpus=1,
+                        min_vram_gb=4.0,
+                        disk_size=10,
+                        memory=16
+                    )
                 )
-            )
-        else:
-            video_tool.processor.setup_gpu_environment(
-                GPURequirements(min_vram_gb=4.0)
-            )
+            else:
+                video_tool.processor.setup_gpu_environment(
+                    GPURequirements(min_vram_gb=4.0)
+                )
+        except Exception as e:
+            logger.error(f"Failed to setup GPU environment: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise HTTPException(status_code=500, detail=f"Failed to setup GPU environment: {str(e)}")
 
         # Create runnable config with callbacks disabled
         runnable_config = RunnableConfig(
@@ -113,9 +128,6 @@ async def process_videos(
             tags=None
         )
 
-        # Process the videos with user's prompt
-        logger.info("Starting video processing...")
-        
         # Create a timestamp-based output name
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_name = f"combined_{timestamp}"
@@ -128,53 +140,71 @@ async def process_videos(
                 {
                     "clips": [
                         {
-                            "source_video": str(input_dir / video_name),  # Use absolute path
+                            "source_video": str(input_dir / video_name),
                             "start_time": 0,
-                            "end_time": -1,  # Will be set by the processor based on video duration
+                            "end_time": -1,
                             "position": {
                                 "x": 0.0, 
-                                "y": float(i) * (1.0 / len(videos)),  # Stack videos vertically by default
+                                "y": float(i) * (1.0 / len(videos)),
                                 "width": 1.0,
-                                "height": 1.0 / len(videos)  # Equal height distribution
+                                "height": 1.0 / len(videos)
                             },
-                            "effects": []  # Effects will be added by the processor based on the prompt
+                            "effects": []
                         } for i, video_name in enumerate(videos)
                     ],
-                    "captions": []  # Captions will be added by the processor based on the prompt
+                    "captions": []
                 }
             ]
         }
         
-        logger.info(f"Created task structure: {task}")
-        result = await video_tool._arun(task, runnable_config)
-        logger.info(f"Processing complete. Result: {result}")
+        logger.info(f"Created task structure: {json.dumps(task, indent=2)}")
+        
+        try:
+            # Use the synchronous version of the video tool
+            result = video_tool._run(task, runnable_config)
+            logger.info(f"Processing complete. Result: {json.dumps(result, indent=2)}")
+        except Exception as e:
+            logger.error(f"Error during video processing: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise HTTPException(status_code=500, detail=f"Error during video processing: {str(e)}")
 
-        # Extract the output path from the result
-        if "Output saved to:" in result:
-            actual_output_path = result.split("Output saved to:")[1].strip()
-            actual_output_path = Path(actual_output_path)
-            logger.info(f"Output path found: {actual_output_path} (exists: {actual_output_path.exists()})")
-            
-            if not actual_output_path.exists():
-                logger.error(f"Output file not found at {actual_output_path}")
-                raise HTTPException(status_code=500, detail="Video processing failed - output file not created")
-            
-            return {
-                "status": "success",
-                "message": "Videos processed successfully",
-                "input_videos": videos,
-                "output_path": str(actual_output_path),
-                "details": result
-            }
+        if result["status"] == "error":
+            error_msg = result["message"]
+            logger.error(f"Processing failed: {error_msg}")
+            raise HTTPException(status_code=500, detail=error_msg)
+
+        # Extract the output path and verification details from the result
+        output_path = Path(result["output_path"])
+        if not output_path.exists():
+            error_msg = f"Output file not found at {output_path}"
+            logger.error(error_msg)
+            raise HTTPException(status_code=500, detail=error_msg)
+        
+        response_data = {
+            "status": "success",
+            "message": "Videos processed successfully",
+            "input_videos": videos,
+            "output_path": str(output_path),
+            "details": result.get("message", "")
+        }
+
+        # Add verification details if present
+        if "verification" in result:
+            logger.info(f"Verification details: {json.dumps(result['verification'], indent=2)}")
+            response_data["verification"] = result["verification"]
         else:
-            logger.error("Could not find output path in result")
-            logger.error(f"Full result: {result}")
-            raise HTTPException(status_code=500, detail="Video processing failed - could not determine output path")
+            logger.warning("No verification details in result")
+        
+        logger.info(f"Returning response: {json.dumps(response_data, indent=2)}")
+        return response_data
 
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Error processing videos: {str(e)}")
+        error_msg = f"Video processing failed: {str(e)}"
+        logger.error(error_msg)
         logger.error(f"Traceback: {traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=f"Video processing failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=error_msg)
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000) 

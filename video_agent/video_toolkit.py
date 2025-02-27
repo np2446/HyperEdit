@@ -18,6 +18,8 @@ from langchain.schema import HumanMessage
 import json
 import aiohttp
 import logging
+from datetime import datetime
+import traceback
 
 from .video_processor import VideoProcessor, GPURequirements
 from .video_models import (
@@ -86,7 +88,7 @@ class VideoTool(BaseTool):
     analyzed_videos: Dict[str, VideoInfo] = Field(default_factory=dict)
     input_dir: Path = Field(default_factory=lambda: Path("input_videos"))
     output_dir: Path = Field(default_factory=lambda: Path("test_outputs"))
-    verifier_url: str = Field(default="http://localhost:8001/verify")
+    execution_service_url: str = Field(default="http://localhost:4003")
     
     def __init__(self, **data):
         super().__init__(**data)
@@ -127,55 +129,88 @@ class VideoTool(BaseTool):
         
         return self.analyzed_videos
     
-    async def _verify_llm_response(self, prompt: str, response: str) -> bool:
-        """Verify LLM response using the inference verifier."""
+    async def _verify_llm_response(self, prompt: str, response: str) -> Dict[str, Any]:
+        """Verify LLM response using the AVS execution service."""
         try:
+            print("\n=== Starting LLM Response Verification ===")
+            print(f"Execution Service URL: {self.execution_service_url}")
+            print(f"Prompt: {prompt}")
+            print(f"Response: {response}")
+            
             async with aiohttp.ClientSession() as session:
                 payload = {
-                    "prompt": prompt,
+                    "query": prompt,
                     "response": response,
-                    "model": "claude-3-sonnet-20240229",
-                    "context": "Video editing assistant processing user request"
+                    "taskDefinitionId": 0
                 }
-                async with session.post(self.verifier_url, json=payload) as resp:
+                
+                verification_url = f"{self.execution_service_url}/task/execute"
+                print(f"\nSending verification request to: {verification_url}")
+                print(f"Payload: {json.dumps(payload, indent=2)}")
+                
+                headers = {"Content-Type": "application/json"}
+                async with session.post(
+                    verification_url,
+                    json=payload,
+                    headers=headers
+                ) as resp:
+                    print(f"\nResponse status: {resp.status}")
                     if resp.status == 200:
                         result = await resp.json()
-                        print(f"Verification result: {result}")
-                        return result.get("is_valid", False)
+                        print(f"Verification result: {json.dumps(result, indent=2)}")
+                        
+                        tx_hash = result.get("transactionHash")
+                        chain_url = f"https://sepolia.etherscan.io/tx/{tx_hash}" if tx_hash else None
+                        
+                        return {
+                            "is_valid": True,
+                            "verification_id": tx_hash,
+                            "chain_url": chain_url,
+                            "timestamp": datetime.now().isoformat(),
+                            "raw_response": result
+                        }
                     else:
-                        print(f"Verification failed with status {resp.status}")
-                        return False
+                        error_text = await resp.text()
+                        print(f"Verification failed: {error_text}")
+                        return {
+                            "is_valid": False,
+                            "error": f"Verification request failed with status {resp.status}: {error_text}"
+                        }
         except Exception as e:
             print(f"Error during verification: {str(e)}")
-            return False
+            traceback.print_exc()
+            return {
+                "is_valid": False,
+                "error": str(e)
+            }
 
-    async def _get_verified_llm_response(self, prompt: str, max_attempts: int = 3) -> str:
-        """Get LLM response and verify it with the inference verifier."""
-        for attempt in range(max_attempts):
-            response = self.llm.invoke(prompt).content
-            print(f"\nLLM response received (attempt {attempt + 1}):\n{response}")
-            
-            is_valid = await self._verify_llm_response(prompt, response)
-            if is_valid:
-                print("Response verified successfully")
-                return response
-            else:
-                print(f"Response verification failed, attempt {attempt + 1} of {max_attempts}")
+    async def _get_verified_llm_response(self, prompt: str) -> Tuple[str, Dict[str, Any]]:
+        """Get LLM response and verify it with the AVS execution service."""
+        response = self.llm.invoke(prompt).content
+        print(f"\nLLM response received:\n{response}")
         
-        raise ValueError("Failed to get a verified response after maximum attempts")
+        verification_result = await self._verify_llm_response(prompt, response)
+        if not verification_result["is_valid"]:
+            error_msg = verification_result.get("error", "Response verification failed")
+            raise ValueError(f"Invalid LLM response: {error_msg}")
+        
+        return response, verification_result
 
-    def _parse_edit_request(self, query: str) -> Dict[str, Any]:
-        """Use LLM to parse natural language query into structured edit request."""
-        print("\nParsing edit request...")
+    def _parse_edit_request(self, query: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        """Use LLM to parse natural language query into structured edit request and return verification details."""
+        print("\n=== Starting Edit Request Parsing ===")
+        print(f"Input query: {query}")
         
         # Extract video name from the query if specified
         target_video = None
         if "Process only the video '" in query:
             target_video = query.split("Process only the video '")[1].split("'")[0]
             query = query.split(" with the following instructions: ")[1]
+            print(f"Extracted target video: {target_video}")
         
         # Analyze videos first
         video_info = self._analyze_videos()
+        print(f"\nAnalyzed {len(video_info)} videos")
         
         # Filter to only the target video if specified
         if target_video:
@@ -202,7 +237,7 @@ Video: {info.path}
             video_summaries.append(summary)
             print(f"Video summary:\n{summary}")
         
-        print("\nSending request to LLM...")
+        print("\n=== Sending request to LLM for verification ===")
         prompt = f"""Parse the following video editing request into a structured format.
 
 Available input videos:
@@ -249,9 +284,12 @@ Rules:
 
 Your response must be ONLY the JSON object, with no other text."""
 
+        print("\nGetting LLM response and verifying...")
         # Get verified response from LLM
         loop = asyncio.get_event_loop()
-        response = loop.run_until_complete(self._get_verified_llm_response(prompt))
+        response, verification_details = loop.run_until_complete(self._get_verified_llm_response(prompt))
+        print("\nVerification complete")
+        print(f"Verification details: {json.dumps(verification_details, indent=2)}")
         
         try:
             # Parse the JSON response
@@ -286,7 +324,7 @@ Your response must be ONLY the JSON object, with no other text."""
                         "height": 0.1
                     })
             
-            return parsed
+            return parsed, verification_details
             
         except Exception as e:
             print(f"Failed to parse LLM response: {str(e)}")
@@ -409,28 +447,27 @@ Your response must be ONLY the JSON object, with no other text."""
         
         return request, plan
     
-    async def _arun(self, query: str, runnable_config: Optional[RunnableConfig] = None) -> str:
-        """Process a video editing request."""
+    async def _arun(self, query: str, runnable_config: Optional[RunnableConfig] = None) -> Dict[str, Any]:
+        """Process a video editing request and return result with verification details."""
         try:
             # Get list of available videos
             videos = self._get_input_videos()
             if not videos:
-                return "No input videos found in the input_videos directory."
+                return {
+                    "status": "error",
+                    "message": "No input videos found in the input_videos directory."
+                }
             
-            # Process the request directly if it's a dictionary
-            if isinstance(query, dict):
-                try:
-                    print("\nProcessing direct dictionary request...")
-                    request, edit_plan = self._create_edit_plan(query)
-                    output_path = self.processor.process_video(edit_plan, request)
-                    return f"Video processing complete! Output saved to: {output_path}"
-                except Exception as e:
-                    return f"Error processing request: {str(e)}"
-            
-            # Otherwise, parse the request from text
             try:
-                print("\nProcessing natural language request...")
-                parsed_request = self._parse_edit_request(query)
+                print("\nProcessing request...")
+                # Convert dictionary to string if needed
+                if isinstance(query, dict):
+                    query_str = json.dumps(query)
+                else:
+                    query_str = query
+                
+                # Always parse and verify the request
+                parsed_request, verification_details = self._parse_edit_request(query_str)
                 print(f"\nParsed request:\n{json.dumps(parsed_request, indent=2)}")
                 
                 print("\nCreating edit plan...")
@@ -438,14 +475,30 @@ Your response must be ONLY the JSON object, with no other text."""
                 
                 print("\nProcessing video with edit plan...")
                 output_path = self.processor.process_video(edit_plan, request)
-                return f"Video processing complete! Output saved to: {output_path}"
+                
+                return {
+                    "status": "success",
+                    "message": "Video processing complete!",
+                    "output_path": str(output_path),
+                    "verification": verification_details
+                }
+                
             except ValueError as e:
-                return f"Error parsing LLM response: {str(e)}"
+                return {
+                    "status": "error",
+                    "message": f"Error parsing request: {str(e)}"
+                }
             except Exception as e:
-                return f"Error processing request: {str(e)}"
+                return {
+                    "status": "error",
+                    "message": f"Error processing request: {str(e)}"
+                }
             
         except Exception as e:
-            return f"Error processing video: {str(e)}"
+            return {
+                "status": "error",
+                "message": f"Error processing video: {str(e)}"
+            }
     
     def _run(self, query: str, runnable_config: Optional[RunnableConfig] = None) -> str:
         """Synchronous version of video processing."""
