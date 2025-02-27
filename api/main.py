@@ -19,6 +19,7 @@ sys.path.append(str(project_root))
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from datetime import datetime
 
 from video_agent import VideoTool, VideoProcessor
@@ -54,9 +55,13 @@ llm = ChatAnthropic(
 output_dir = project_root / "test_outputs"
 output_dir.mkdir(exist_ok=True)
 
+# Mount the test_outputs directory for static file serving
+app.mount("/test_outputs", StaticFiles(directory=str(output_dir)), name="test_outputs")
+
+# poetry run python -m uvicorn api.main:app --reload
 
 # Sample request: 
-# curl -X POST "http://localhost:8000/process-video/circles_warm.mp4" -H "Content-Type: application/json" -d '{"prompt": "Add a title caption 'Warm Patterns' that fades in at the start"}'
+# curl -X POST "http://localhost:8000/process-video/circles_warm.mp4?prompt=Add%20a%20title%20caption%20%27Warm%20Patterns%27%20at%20the%20start"
 @app.post("/process-video/{video_name}")
 async def process_video(
     video_name: str,

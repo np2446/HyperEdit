@@ -1,71 +1,46 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { writeFile } from 'fs/promises';
+import path from 'path';
 
 export const maxDuration = 300; // Set timeout to 5 minutes (300 seconds)
 
-export async function POST(req: NextRequest) {
+export async function POST(request: NextRequest) {
   try {
-    // Create a FormData object to forward to the backend
-    const formData = await req.formData();
-    
-    // Extract the prompt and local_mode flag
+    const formData = await request.formData();
     const prompt = formData.get('prompt') as string;
-    const localModeStr = formData.get('local_mode') as string;
-    const localMode = localModeStr === 'true';
-    
-    // Extract video files
-    const videos = formData.getAll('videos');
-    
-    if (!prompt) {
+    const video = formData.get('videos') as File;
+
+    if (!video) {
       return NextResponse.json(
-        { detail: 'Prompt is required' },
-        { status: 400 }
-      );
-    }
-    
-    if (!videos || videos.length === 0) {
-      return NextResponse.json(
-        { detail: 'At least one video file is required' },
+        { error: 'No video file provided' },
         { status: 400 }
       );
     }
 
-    // Forward the request to our FastAPI backend
-    const backendUrl = process.env.BACKEND_URL || 'http://localhost:8000';
-    
-    // Create a new FormData to send to the backend
-    const backendFormData = new FormData();
-    backendFormData.append('prompt', prompt);
-    backendFormData.append('local_mode', localMode.toString());
-    
-    // Add each video file to the form data
-    videos.forEach((video, index) => {
-      if (video instanceof File) {
-        backendFormData.append('videos', video);
-      }
-    });
-    
-    // Send the request to the backend
-    const response = await fetch(`${backendUrl}/process-video`, {
+    // Create input_videos directory if it doesn't exist
+    const inputDir = path.join(process.cwd(), '..', 'input_videos');
+    await writeFile(path.join(inputDir, video.name), Buffer.from(await video.arrayBuffer()));
+
+    // Call the FastAPI backend
+    const backendUrl = `http://localhost:8000/process-video/${encodeURIComponent(video.name)}?prompt=${encodeURIComponent(prompt)}`;
+    const response = await fetch(backendUrl, {
       method: 'POST',
-      body: backendFormData,
     });
-    
+
     if (!response.ok) {
-      const errorData = await response.json();
+      const error = await response.text();
       return NextResponse.json(
-        { detail: errorData.detail || 'Failed to process video' },
+        { error: `Backend processing failed: ${error}` },
         { status: response.status }
       );
     }
-    
-    // Return the response from the backend
-    const data = await response.json();
-    return NextResponse.json(data);
-    
+
+    const result = await response.json();
+    return NextResponse.json(result);
   } catch (error) {
     console.error('Error processing video:', error);
     return NextResponse.json(
-      { detail: 'Internal server error' },
+      { error: 'Internal server error' },
       { status: 500 }
     );
   }

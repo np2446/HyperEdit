@@ -35,35 +35,33 @@ export default function FileUpload({ onUpload }: FileUploadProps) {
     setValidationError(null)
     
     // Check if too many files
-    if (files.length > config.upload.maxFiles) {
+    if (files.length > 1) {
       setValidationError({
-        message: `You can upload a maximum of ${config.upload.maxFiles} files at once.`,
+        message: `Please upload only one video file at a time.`,
         type: 'count'
       })
       return false
     }
     
-    // Check each file
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i]
+    // Check file
+    const file = files[0]
       
-      // Check file type
-      if (!isValidFileType(file)) {
-        setValidationError({
-          message: `Unsupported file type: ${file.type}. Please upload MP4, MOV, or AVI files.`,
-          type: 'type'
-        })
-        return false
-      }
-      
-      // Check file size
-      if (!isValidFileSize(file)) {
-        setValidationError({
-          message: `File ${file.name} is too large (${formatFileSize(file.size)}). Maximum size is ${config.upload.maxFileSize}MB.`,
-          type: 'size'
-        })
-        return false
-      }
+    // Check file type
+    if (!isValidFileType(file)) {
+      setValidationError({
+        message: `Unsupported file type: ${file.type}. Please upload MP4, MOV, or AVI files.`,
+        type: 'type'
+      })
+      return false
+    }
+    
+    // Check file size
+    if (!isValidFileSize(file)) {
+      setValidationError({
+        message: `File ${file.name} is too large (${formatFileSize(file.size)}). Maximum size is ${config.upload.maxFileSize}MB.`,
+        type: 'size'
+      })
+      return false
     }
     
     return true
@@ -113,14 +111,14 @@ export default function FileUpload({ onUpload }: FileUploadProps) {
           onChange={handleFileChange} 
           className="hidden" 
           accept={config.upload.allowedFileTypes.join(',')}
-          multiple 
+          multiple={false}
         />
 
         <Upload className="h-10 w-10 mx-auto mb-4 text-zinc-500" />
 
-        <h3 className="text-lg font-medium mb-2">Drag and drop your video clips</h3>
+        <h3 className="text-lg font-medium mb-2">Drag and drop your video</h3>
         <p className="text-zinc-500 mb-4">
-          Support for MP4, MOV, AVI (max {config.upload.maxFileSize}MB each, up to {config.upload.maxFiles} files)
+          Support for MP4, MOV, AVI (max {config.upload.maxFileSize}MB)
         </p>
 
         <Button

@@ -112,54 +112,34 @@ export default function VideoEditor() {
       // Create FormData to send files to the backend
       const formData = new FormData()
       formData.append("prompt", prompt)
-      formData.append("local_mode", isLocalMode.toString())
       
-      // Add all video files
-      clips.forEach((clip) => {
-        if (clip.file) {
-          formData.append("videos", clip.file)
-        }
-      })
-
-      // Set up request timeout
-      const controller = new AbortController()
-      const timeoutId = setTimeout(() => controller.abort(), config.api.timeout)
+      // Add the first video file only
+      const clip = clips[0]
+      if (clip.file) {
+        formData.append("videos", clip.file)
+      }
 
       // Call the backend API
       const response = await fetch("/api/process-video", {
         method: "POST",
-        body: formData,
-        signal: controller.signal
+        body: formData
       })
-      
-      clearTimeout(timeoutId)
 
       if (!response.ok) {
         const errorData = await response.json()
-        throw new Error(errorData.detail || "Failed to process video")
+        throw new Error(errorData.error || "Failed to process video")
       }
 
       const data = await response.json()
+      setIsProcessing(false)
       
-      // Set task ID for polling
-      if (data.task_id) {
-        setTaskId(data.task_id)
-        setStatusMessage(data.message || "Processing video...")
-        setProcessingProgress(10) // Start progress at 10%
-      } else {
-        // If there's a direct result
-        setIsProcessing(false)
-        if (data.video_url) {
-          setProcessedVideo(data.video_url)
-        }
+      // Show the processed video
+      if (data.output_path) {
+        setProcessedVideo(`/test_outputs/${data.output_path.split('/').pop()}`)
       }
     } catch (err) {
       console.error("Error processing video:", err)
-      if (err instanceof DOMException && err.name === 'AbortError') {
-        setError('Request timed out. Please try again.')
-      } else {
-        setError(err instanceof Error ? err.message : "An unknown error occurred")
-      }
+      setError(err instanceof Error ? err.message : "An unknown error occurred")
       setIsProcessing(false)
     }
   }
@@ -170,7 +150,7 @@ export default function VideoEditor() {
         <h1 className="text-4xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-purple-400 via-cyan-500 to-emerald-400 mb-2">
           AI Video Editor
         </h1>
-        <p className="text-zinc-400">Upload your clips, describe your edits, and let AI do the magic</p>
+        <p className="text-zinc-400">Upload your video, describe your edits, and let AI do the magic</p>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
@@ -186,27 +166,16 @@ export default function VideoEditor() {
           </div>
 
           <div className="space-y-2">
-            <h2 className="text-xl font-semibold text-white">Upload Clips</h2>
+            <h2 className="text-xl font-semibold text-white">Upload Video</h2>
             <FileUpload onUpload={handleFileUpload} />
           </div>
 
           {clips.length > 0 && (
             <div className="space-y-2">
-              <h2 className="text-xl font-semibold text-white">Your Clips</h2>
-              <ClipList clips={clips} onRemove={removeClip} />
+              <h2 className="text-xl font-semibold text-white">Your Video</h2>
+              <ClipList clips={clips.slice(0, 1)} onRemove={removeClip} />
             </div>
           )}
-          
-          <div className="flex items-center space-x-2 py-2">
-            <Checkbox 
-              id="local-mode" 
-              checked={isLocalMode}
-              onCheckedChange={(checked) => setIsLocalMode(checked === true)}
-            />
-            <Label htmlFor="local-mode" className="text-zinc-400">
-              Run in local mode (faster, but less powerful)
-            </Label>
-          </div>
 
           <Button
             onClick={processVideo}
@@ -232,7 +201,7 @@ export default function VideoEditor() {
           ) : (
             <div className="text-center text-zinc-500">
               <Upload className="h-16 w-16 mx-auto mb-4 opacity-50" />
-              <p>Upload clips and process to see the result here</p>
+              <p>Upload a video and process to see the result here</p>
             </div>
           )}
         </div>
