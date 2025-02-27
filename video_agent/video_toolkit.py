@@ -161,13 +161,45 @@ class VideoTool(BaseTool):
                 result = resp.json()
                 print(f"Verification result: {json.dumps(result, indent=2)}")
                 
-                tx_hash = result.get("data", {}).get("proofOfTask")
-                chain_url = f"https://sepolia.etherscan.io/tx/{tx_hash}" if tx_hash else None
+                # Extract IPFS hash
+                ipfs_hash = result.get("data", {}).get("proofOfTask")
+                
+                # Try to get transaction hash from different possible locations in the response
+                tx_hash = None
+                raw_data = result.get("data", {})
+                
+                # First try direct transaction hash
+                if "transactionHash" in raw_data:
+                    tx_hash = raw_data["transactionHash"]
+                # Then try in raw field if it exists
+                elif "raw" in raw_data and isinstance(raw_data["raw"], str):
+                    try:
+                        raw_json = json.loads(raw_data["raw"])
+                        tx_hash = raw_json.get("transactionHash")
+                    except:
+                        pass
+                # Finally check taskHash field
+                elif "taskHash" in raw_data:
+                    tx_hash = raw_data["taskHash"]
+                
+                # Clean up transaction hash if found
+                if tx_hash and not tx_hash.startswith("0x"):
+                    tx_hash = f"0x{tx_hash}"
+                
+                # Construct chain URL if we have a valid transaction hash
+                chain_url = None
+                if tx_hash and tx_hash.startswith("0x"):
+                    chain_url = f"https://sepolia.etherscan.io/tx/{tx_hash}"
+                    print(f"Generated chain URL: {chain_url}")
+                else:
+                    print(f"No valid transaction hash found in response. Raw tx_hash: {tx_hash}")
                 
                 return {
                     "is_valid": True,
-                    "verification_id": tx_hash,
+                    "verification_id": ipfs_hash,
+                    "transaction_hash": tx_hash,
                     "chain_url": chain_url,
+                    "ipfs_url": f"https://ipfs.io/ipfs/{ipfs_hash}" if ipfs_hash else None,
                     "timestamp": datetime.now().isoformat(),
                     "raw_response": result
                 }
