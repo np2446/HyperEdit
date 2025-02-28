@@ -2,25 +2,6 @@
 
 A video editing application that uses AI to process natural language editing requests and verifies LLM responses on-chain using Hyperbolic's Agent Kit.
 
-## Architecture
-
-```mermaid
-graph TD
-    U[User] --> |1. Upload Videos| F[Frontend]
-    U --> |2. Enter Edit Request| F
-    F --> |3. Send Videos & Request| B[Backend]
-    B --> |4. Process Videos| VT[Video Toolkit]
-    VT --> |5. Generate Edit Plan| LLM[Claude 3.5]
-    VT --> |6. Verify Response| AVS[AVS Network]
-    AVS --> |7. Store Proof| IPFS[IPFS]
-    AVS --> |8. Submit Tx| ETH[Ethereum]
-    VT --> |9. Execute Edits| VP[Video Processor]
-    VP --> |10. Return Video| B
-    B --> |11. Return Result| F
-    F --> |12. Display Video| U
-    F --> |13. Show Verification| U
-```
-
 ## Prerequisites
 
 - Node.js 18+
