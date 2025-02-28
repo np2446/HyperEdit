@@ -2,23 +2,6 @@
 
 A video editing application that uses AI to process natural language editing requests and verifies LLM responses on-chain using Hyperbolic's Agent Kit.
 
-## Architecture
-
-```mermaid
-graph TD
-    U[User] --> |1. Upload Videos| F[Frontend]
-    U --> |2. Enter Edit Request| F
-    F --> |3. Send Videos & Request| B[Backend]
-    B --> |4. Process Videos| VT[Video Toolkit]
-    VT --> |5. Generate Edit Plan| LLM[Claude 3.5]
-    VT --> |6. Verify Response| AVS[AVS Network]
-    AVS --> |7. Store Proof| IPFS[IPFS]
-    AVS --> |8. Submit Tx| ETH[Ethereum]
-    VT --> |9. Execute Edits| VP[Video Processor]
-    VP --> |10. Return Video| B
-    B --> |11. Return Result| F
-    F --> |12. Display Video| U
-    F --> |13. Show Verification| U
 ```
 
 ## Prerequisites
@@ -54,7 +37,7 @@ npm install
 cp .env.example .env
 # Add your Anthropic API key to .env
 
-# In llm_inference_verifier directory
+cd llm_inference_verifier directory
 cp .env.example .env
 # Add your Alchemy API key to .env
 ```
@@ -121,15 +104,6 @@ npm run dev
     - Attesters: Verify LLM responses independently
     - Validation Service: Validates response correctness
     - Execution Service: Handles transaction execution
-  - Network Configuration:
-    - Uses Sepolia testnet for verification
-    - IPFS for storing proof data
-    - P2P network for attester communication
-
-- **Storage**:
-  - Local file system for video processing
-  - IPFS for verification proof storage
-  - Ethereum blockchain for transaction records
 
 ## Environment Setup
 
@@ -159,16 +133,8 @@ OTHENTIC_BOOTSTRAP_SEED=97a64de0fb18532d4ce56fb35b730aedec993032b533f783b04c9175
 LLM_BEARER_TOKEN=
 ```
 
-
-For detailed setup instructions and architecture details, refer to:
-- [Othentic AVS Documentation](https://docs.othentic.xyz/getting-started)
-- [Hyperbolic Agent Kit Documentation](https://github.com/hyperbolic-labs/agentkit)
-- [Claude API Documentation](https://docs.anthropic.com/claude/reference/getting-started-with-the-api)
-- [Sepolia Testnet](https://sepolia.dev/)
-- [IPFS Documentation](https://docs.ipfs.tech/)
-
 ## References
-
+- [Othentic AVS Documentation](https://docs.othentic.xyz/getting-started)
 - [Hyperbolic Agent Kit Documentation](https://github.com/hyperbolic-labs/agentkit)
 
 ## License
