@@ -2,8 +2,6 @@
 
 A video editing application that uses AI to process natural language editing requests and verifies LLM responses on-chain using Hyperbolic's Agent Kit.
 
-```
-
 ## Prerequisites
 
 - Node.js 18+
