@@ -1,6 +1,8 @@
-# HyperEdit - AI Video Editor
+# Project Jarvis - AI Video Editor
 
 A video editing application that uses AI to process natural language editing requests and verifies LLM responses on-chain using Hyperbolic's Agent Kit.
+
+```
 
 ## Prerequisites
 
@@ -35,14 +37,14 @@ npm install
 cp .env.example .env
 # Add your Anthropic API key to .env
 
-# In llm_inference_verifier directory
+cd llm_inference_verifier directory
 cp .env.example .env
 # Add your Alchemy API key to .env
 ```
 
 ## Running the Application
 
-1. Start the LLM AVS Verifier:
+1. Start the LLM Verification Services:
 ```bash
 cd llm_inference_verifier
 docker-compose up -d
@@ -56,7 +58,7 @@ poetry run python -m uvicorn api.main:app --reload --port 8000
 
 3. Start the Frontend Development Server:
 ```bash
-cd frontend
+# In frontend directory
 npm run dev
 ```
 
@@ -67,7 +69,7 @@ npm run dev
 ## Usage
 
 1. Upload one or more video files (supported formats: MP4, MOV, AVI)
-2. Enter your editing request in natural language (e.g., "make these split screen videos")
+2. Enter your editing request in natural language 
 3. Click "Process Video" to start the editing process
 4. Once complete, you can:
    - View the processed video
@@ -80,7 +82,6 @@ npm run dev
   - Modern UI built with Radix UI and Tailwind
   - Real-time video processing status updates
   - Seamless video upload and preview
-  - Verification status display with Etherscan links
 
 - **Backend**: FastAPI server handling video processing and LLM interactions
   - Asynchronous video processing pipeline
@@ -102,21 +103,12 @@ npm run dev
     - Attesters: Verify LLM responses independently
     - Validation Service: Validates response correctness
     - Execution Service: Handles transaction execution
-  - Network Configuration:
-    - Uses Sepolia testnet for verification
-    - IPFS for storing proof data
-    - P2P network for attester communication
-
-- **Storage**:
-  - Local file system for video processing
-  - IPFS for verification proof storage
-  - Ethereum blockchain for transaction records
 
 ## Environment Setup
 
 ### LLM Verification Environment
 
-The LLM verification service uses Othentic's AVS framework. Follow these steps to set up the environment:
+The LLM verification service uses Othentic's AVS framework. Set up the .env in llm_inference_verifier:
 
 1. Set up operator keys:
 ```bash
@@ -140,18 +132,10 @@ OTHENTIC_BOOTSTRAP_SEED=97a64de0fb18532d4ce56fb35b730aedec993032b533f783b04c9175
 LLM_BEARER_TOKEN=
 ```
 
-
-For detailed setup instructions and architecture details, refer to:
-- [Othentic AVS Documentation](https://docs.othentic.xyz/getting-started)
-- [Hyperbolic Agent Kit Documentation](https://github.com/hyperbolic-labs/agentkit)
-- [Claude API Documentation](https://docs.anthropic.com/claude/reference/getting-started-with-the-api)
-- [Sepolia Testnet](https://sepolia.dev/)
-- [IPFS Documentation](https://docs.ipfs.tech/)
-
 ## References
-
-- [Hyperbolic Agent Kit Documentation](https://github.com/hyperbolic-labs/agentkit)
 - [Othentic AVS Documentation](https://docs.othentic.xyz/getting-started)
+- [Hyperbolic Agent Kit Documentation](https://github.com/hyperbolic-labs/agentkit)
+- [LLM Inference](https://github.com/didintern/Eiko-AI-Othentic)
 
 ## License
 
