@@ -61,7 +61,7 @@ cp .env.example .env
 
 ## Running the Application
 
-1. Start the LLM Verification Services:
+1. Start the LLM AVS Verifier:
 ```bash
 cd llm_inference_verifier
 docker-compose up -d
@@ -75,7 +75,7 @@ poetry run python -m uvicorn api.main:app --reload --port 8000
 
 3. Start the Frontend Development Server:
 ```bash
-# In frontend directory
+cd frontend
 npm run dev
 ```
 
@@ -110,7 +110,7 @@ npm run dev
 - **Video Toolkit**: Core processing engine using OpenCV and MoviePy
   - GPU-accelerated video processing
   - Support for multiple video formats
-  - Split-screen and effects processing
+  - Effects processing
   - Customizable video layouts and transitions
 
 - **LLM Verification**: Autonomous Verification Service (AVS) powered by Othentic
@@ -170,6 +170,7 @@ For detailed setup instructions and architecture details, refer to:
 ## References
 
 - [Hyperbolic Agent Kit Documentation](https://github.com/hyperbolic-labs/agentkit)
+- [Othentic AVS Documentation](https://docs.othentic.xyz/getting-started)
 
 ## License
 
