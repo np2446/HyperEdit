@@ -82,7 +82,6 @@ npm run dev
   - Modern UI built with Radix UI and Tailwind
   - Real-time video processing status updates
   - Seamless video upload and preview
-  - Verification status display with Etherscan links
 
 - **Backend**: FastAPI server handling video processing and LLM interactions
   - Asynchronous video processing pipeline
@@ -93,7 +92,7 @@ npm run dev
 - **Video Toolkit**: Core processing engine using OpenCV and MoviePy
   - GPU-accelerated video processing
   - Support for multiple video formats
-  - Split-screen and effects processing
+  - Effects processing
   - Customizable video layouts and transitions
 
 - **LLM Verification**: Autonomous Verification Service (AVS) powered by Othentic
@@ -109,7 +108,7 @@ npm run dev
 
 ### LLM Verification Environment
 
-The LLM verification service uses Othentic's AVS framework. Follow these steps to set up the environment:
+The LLM verification service uses Othentic's AVS framework. Set up the .env in llm_inference_verifier:
 
 1. Set up operator keys:
 ```bash
