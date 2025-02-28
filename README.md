@@ -136,6 +136,7 @@ LLM_BEARER_TOKEN=
 ## References
 - [Othentic AVS Documentation](https://docs.othentic.xyz/getting-started)
 - [Hyperbolic Agent Kit Documentation](https://github.com/hyperbolic-labs/agentkit)
+- [LLM Inference](https://github.com/didintern/Eiko-AI-Othentic)
 
 ## License
 
