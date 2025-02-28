@@ -69,7 +69,7 @@ npm run dev
 ## Usage
 
 1. Upload one or more video files (supported formats: MP4, MOV, AVI)
-2. Enter your editing request in natural language (e.g., "make these split screen videos")
+2. Enter your editing request in natural language 
 3. Click "Process Video" to start the editing process
 4. Once complete, you can:
    - View the processed video
