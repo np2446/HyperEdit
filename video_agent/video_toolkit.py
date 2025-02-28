@@ -129,6 +129,33 @@ class VideoTool(BaseTool):
         
         return self.analyzed_videos
     
+    def _get_source_index(self, source_video: str) -> int:
+        """Get the index of a source video in the input videos list.
+        
+        Args:
+            source_video: Path to the source video
+            
+        Returns:
+            Index of the video in the input videos list
+            
+        Raises:
+            ValueError: If the video is not found
+        """
+        # Get the video name from the path
+        source_name = Path(source_video).name
+        print(f"Looking for video: {source_name}")
+        
+        # Get list of input videos
+        input_videos = self._get_input_videos()
+        
+        # Find matching video by name
+        for i, video_path in enumerate(input_videos):
+            if Path(video_path).name == source_name:
+                print(f"Found video at index {i}: {video_path}")
+                return i
+        
+        raise ValueError(f"Video not found: {source_video}")
+    
     def _verify_llm_response_sync(self, prompt: str, response: str) -> Dict[str, Any]:
         """Synchronous version of LLM response verification."""
         try:
@@ -390,40 +417,50 @@ Your response must be ONLY the JSON object, with no other text."""
             output_path=output_path
         )
         
-        # Create a simple scene with all videos
-        clips = []
-        for scene_data in parsed_request['scenes']:
-            for clip_data in scene_data['clips']:
+        # Process each scene in the request
+        scenes = []
+        for scene_data in parsed_request.get('scenes', []):
+            clips = []
+            
+            # Process clips
+            for clip_data in scene_data.get('clips', []):
                 try:
-                    # Get the video path
+                    # Get source video path and index
                     source_video = clip_data['source_video']
-                    print(f"Processing source video: {source_video}")
+                    source_index = self._get_source_index(source_video)
+                    video_path = input_videos[source_index]
+                    video_info = analyzed_videos[video_path]
                     
-                    # Find the matching video in input_videos
-                    source_name = Path(source_video).name
-                    matching_paths = [p for p in input_videos if Path(p).name == source_name]
-                    if not matching_paths:
-                        raise ValueError(f"Video not found: {source_video}")
-                    source_video = matching_paths[0]
+                    start_time = float(clip_data.get('start_time', 0))
+                    end_time = float(clip_data.get('end_time', video_info.duration))
                     
-                    # Verify the video was analyzed successfully
-                    if source_video not in analyzed_videos:
-                        raise ValueError(f"Video could not be analyzed: {source_video}")
+                    # Process effects
+                    effects = []
+                    for effect_data in clip_data.get('effects', []):
+                        effect_type = effect_data.get('type')
+                        if not effect_type:
+                            continue
+                            
+                        # Convert effect type to enum
+                        try:
+                            effect_type = VideoEffectType(effect_type)
+                        except ValueError:
+                            print(f"Invalid effect type: {effect_type}")
+                            continue
+                            
+                        # Create effect with parameters
+                        effect = VideoEffect(
+                            type=effect_type,
+                            params={
+                                k: v for k, v in effect_data.items()
+                                if k not in ['type', 'start_time', 'end_time']
+                            },
+                            start_time=float(effect_data.get('start_time', start_time)),
+                            end_time=float(effect_data.get('end_time', end_time))
+                        )
+                        effects.append(effect)
                     
-                    # Get source index from absolute path
-                    source_index = input_videos.index(source_video)
-                    print(f"Using video at index {source_index}: {source_video}")
-                    
-                    # Get video info for duration
-                    video_info = analyzed_videos[source_video]
-                    if video_info.duration <= 0:
-                        raise ValueError(f"Invalid video duration for {source_video}: {video_info.duration}")
-                    
-                    # Calculate clip timing
-                    start_time = clip_data.get('start_time', 0)
-                    end_time = video_info.duration if clip_data.get('end_time', -1) < 0 else clip_data['end_time']
-                    
-                    # Create clip with position and audio effects
+                    # Create clip with position and effects
                     clip = ClipSegment(
                         source_index=source_index,
                         start_time=start_time,
@@ -434,15 +471,15 @@ Your response must be ONLY the JSON object, with no other text."""
                             width=float(clip_data['position']['width']),
                             height=float(clip_data['position']['height'])
                         ),
-                        effects=[],  # Keep video effects empty for now
+                        effects=effects,
                         audio_effects=[
                             AudioEffect(
                                 type=AudioEffectType.VOLUME,
-                                params={"volume": 1.0 / len(scene_data['clips'])},  # Normalize volume based on number of clips
-                                start_time=start_time,  # Add start time for audio effect
-                                end_time=end_time,  # Add end time for audio effect
-                                fade_in=0.5,  # Add a small fade in
-                                fade_out=0.5  # Add a small fade out
+                                params={"volume": 1.0 / len(scene_data['clips'])},
+                                start_time=start_time,
+                                end_time=end_time,
+                                fade_in=0.5,
+                                fade_out=0.5
                             )
                         ]
                     )
@@ -451,27 +488,57 @@ Your response must be ONLY the JSON object, with no other text."""
                 except Exception as e:
                     print(f"Error processing clip: {str(e)}")
                     continue
-        
-        if not clips:
-            raise ValueError("No valid clips could be created")
-        
-        # Calculate total duration from clips
-        max_duration = max((clip.end_time for clip in clips), default=0)
-        if max_duration <= 0:
-            raise ValueError("Invalid scene duration")
-        
-        # Create scene with clips
-        scene = Scene(
-            duration=max_duration,
-            clips=clips,
-            transition_out=None,  # No transitions for now
-            captions=[]  # No captions for now
-        )
-        print(f"Created scene with duration {scene.duration}s and {len(clips)} clips")
+            
+            if not clips:
+                raise ValueError("No valid clips could be created")
+            
+            # Calculate total duration from clips
+            max_duration = max((clip.end_time for clip in clips), default=0)
+            if max_duration <= 0:
+                raise ValueError("Invalid scene duration")
+            
+            # Process captions
+            captions = []
+            for caption_data in scene_data.get('captions', []):
+                try:
+                    caption = Caption(
+                        text=caption_data['text'],
+                        start_time=float(caption_data.get('start_time', 0)),
+                        end_time=float(caption_data.get('end_time', 3)),
+                        position=Position(
+                            x=float(caption_data['position']['x']),
+                            y=float(caption_data['position']['y']),
+                            width=float(caption_data['position']['width']),
+                            height=float(caption_data['position']['height'])
+                        ),
+                        style=TextStyle(
+                            font_size=caption_data.get('style', {}).get('font_size', 48),
+                            bold=caption_data.get('style', {}).get('bold', True),
+                            font_family='Arial',
+                            color='white',
+                            stroke_color='black',
+                            stroke_width=2
+                        )
+                    )
+                    captions.append(caption)
+                    print(f"Created caption: {caption}")
+                except Exception as e:
+                    print(f"Error processing caption: {str(e)}")
+                    continue
+            
+            # Create scene with clips and captions
+            scene = Scene(
+                duration=max_duration,
+                clips=clips,
+                captions=captions,
+                transition_out=None
+            )
+            print(f"Created scene with duration {scene.duration}s, {len(clips)} clips, and {len(captions)} captions")
+            scenes.append(scene)
         
         # Create edit plan with minimal GPU requirements
         plan = VideoEditPlan(
-            scenes=[scene],
+            scenes=scenes,
             estimated_gpu_requirements={"min_vram_gb": 4.0, "gpu_count": 1},
             estimated_duration=max_duration
         )

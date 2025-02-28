@@ -79,6 +79,8 @@ class LocalSceneProcessor:
         
         # Build ffmpeg filter chain
         filters = []
+        complex_filters = []
+        using_complex = False
         
         # Add trim filter if needed
         if clip.start_time > 0 or clip.end_time > 0:
@@ -94,10 +96,16 @@ class LocalSceneProcessor:
                     f"saturation={params.get('saturation', 1.0)}"
                 )
             elif effect.type == VideoEffectType.BLUR:
+                using_complex = True
                 strength = effect.params.get('strength', 5)
-                filters.append(f"boxblur={strength}")
+                # Create a gradient blur effect that transitions from left to right
+                complex_filters.extend([
+                    "[0:v]split[main][mask]",
+                    f"[main]boxblur={strength}[blurred]",
+                    "[mask]geq=lum='if(lt(X/W,0.5),1,if(gt(X/W,0.7),0,(0.7-X/W)/0.2))':a=1[gmask]",
+                    "[blurred][main][gmask]maskedmerge[blended]"
+                ])
             elif effect.type == VideoEffectType.SHARPEN:
-                strength = effect.params.get('strength', 1)
                 filters.append(f"unsharp={strength}:5:0")
             elif effect.type == VideoEffectType.SPEED:
                 speed = effect.params.get('factor', 1.0)
@@ -109,78 +117,125 @@ class LocalSceneProcessor:
         # Add scale and position filters
         width = int(clip.position.width * 1920)  # Scale to 1920x1080
         height = int(clip.position.height * 1080)
-        filters.append(f"scale={width}:{height}")
         
-        # Build and execute ffmpeg command
-        filter_str = ','.join(filters) if filters else 'copy'
-        cmd = f"ffmpeg -i {input_path} -vf '{filter_str}' -c:a copy {output_path}"
+        if using_complex:
+            complex_filters.append(f"[blended]scale={width}:{height}[out]")
+            # Build and execute ffmpeg command with complex filtering
+            filter_complex = ';'.join(complex_filters)
+            cmd = f'ffmpeg -i "{input_path}" -filter_complex "{filter_complex}" -map "[out]" -c:a copy "{output_path}"'
+        else:
+            filters.append(f"scale={width}:{height}")
+            # Build and execute ffmpeg command with simple filtering
+            filter_str = ','.join(filters) if filters else 'copy'
+            cmd = f'ffmpeg -i "{input_path}" -vf "{filter_str}" -c:a copy "{output_path}"'
+        
+        print(f"Executing ffmpeg command: {cmd}")  # Debug print
         self._run_command(cmd)
     
-    def _combine_clips(self, clip_paths: List[str], scene: Scene, output_path: str) -> None:
-        """Combine multiple clips into a scene.
+    def _combine_clips(self, clips: List[str], scene: Scene, output_path: str) -> None:
+        """Combine multiple clips into a single scene.
         
         Args:
-            clip_paths: List of processed clip paths
-            scene: Scene containing clip layout information
-            output_path: Path to save the combined scene
+            clips: List of processed clip paths
+            scene: Scene object containing captions and other metadata
+            output_path: Path to save the combined output
         """
-        # Create filter complex for combining clips
-        filter_complex = []
+        # Create filter complex for combining clips and adding overlays
         inputs = []
+        filter_complex = []
         
-        # Add input files
-        for i, clip_path in enumerate(clip_paths):
-            inputs.append(f"-i {clip_path}")
+        # Add input clips
+        for i, clip in enumerate(clips):
+            inputs.extend(["-i", clip])
         
-        # Create overlays
-        for i, clip in enumerate(scene.clips):
-            # Calculate position and size
-            x = int(clip.position.x * 1920)  # Scale to 1920x1080
-            y = int(clip.position.y * 1080)
-            width = int(clip.position.width * 1920)
-            height = int(clip.position.height * 1080)
+        # Start with first video (left side)
+        filter_complex.append(f"[0]scale=960:1080,format=yuv420p[v0]")
+        
+        # Add second video (right side)
+        if len(clips) > 1:
+            filter_complex.append(f"[1]scale=960:1080,format=yuv420p[v1]")
+            filter_complex.append(f"[v0][v1]hstack=inputs=2[base]")
+            last_output = "base"
+        else:
+            last_output = "v0"
+        
+        # Add captions using drawtext filter
+        for i, caption in enumerate(scene.captions):
+            # Calculate fade times and alpha expression
+            fade_in_duration = 0.5
+            fade_out_duration = 0.5
+            fade_out_start = float(caption.end_time) - fade_out_duration
             
-            if i == 0:
-                # First clip - scale and format
-                filter_complex.append(
-                    f"[0]scale={width}:{height},format=yuv420p,pad=1920:1080:{x}:{y}:black[v0]"
-                )
-                last_output = "v0"
-            else:
-                # Scale subsequent clips and overlay
-                filter_complex.append(
-                    f"[{i}]scale={width}:{height},format=yuv420p[fmt{i}];"
-                    f"[{last_output}][fmt{i}]overlay=x={x}:y={y}[v{i}]"
-                )
-                last_output = f"v{i}"
+            # Create alpha expression for fade in/out
+            alpha_expr = (
+                f"if(lt(t,{fade_in_duration}),"  # Fade in
+                f"t/{fade_in_duration},"
+                f"if(gt(t,{fade_out_start}),"  # Fade out
+                f"(1-(t-{fade_out_start})/{fade_out_duration}),"
+                f"1))"  # Full opacity between fade in/out
+            )
+            
+            # Add drawtext filter with fading
+            font_size = getattr(caption.style, 'font_size', 72)
+            filter_complex.append(
+                f"[{last_output}]drawtext="
+                f"text='{caption.text}':"
+                f"fontsize={font_size}:"
+                f"fontcolor=white:"
+                f"fontfile=/System/Library/Fonts/Helvetica.ttc:"  # Use system font
+                f"x=(w-text_w)/2:"  # Center horizontally
+                f"y=100:"  # Position from top
+                f"alpha='{alpha_expr}':"  # Fade in/out
+                f"box=1:"  # Add background box
+                f"boxcolor=black@0.5:"  # Semi-transparent black background
+                f"boxborderw=10:"  # Box padding
+                f"enable='between(t,0,{caption.end_time})'[v{i+2}]"  # Only show during caption duration
+            )
+            last_output = f"v{i+2}"
         
-        # Build and execute ffmpeg command
-        filter_str = ';'.join(filter_complex)
-        cmd = (
-            f"ffmpeg {' '.join(inputs)} "
-            f"-filter_complex '{filter_str}' "
-            f"-map '[{last_output}]' "
-            f"-c:v libx264 -preset medium {output_path}"
-        )
-        self._run_command(cmd)
+        # Build final command
+        filter_str = ";".join(filter_complex)
+        cmd = [
+            "ffmpeg", *inputs,
+            "-filter_complex", filter_str,
+            "-map", f"[{last_output}]",
+            "-c:v", "libx264",
+            "-preset", "medium",
+            output_path
+        ]
+        
+        print(f"Executing ffmpeg command: {' '.join(cmd)}")
+        subprocess.run(cmd, check=True)
     
     def _create_caption_image(self, caption: Caption) -> str:
         """Create an image file containing the caption text."""
         style = caption.style
         output_path = os.path.join(self.workspace_dir, "captions", f"caption_{hash(caption.text)}.png")
         
+        # Ensure captions directory exists
+        os.makedirs(os.path.join(self.workspace_dir, "captions"), exist_ok=True)
+        
         # Create text file
         text_path = os.path.join(self.workspace_dir, "captions", f"text_{hash(caption.text)}.txt")
-        with open(text_path, 'w') as f:
+        with open(text_path, 'w', encoding='utf-8') as f:
             f.write(caption.text)
         
-        # Create image with text
+        # Set default style values if not provided
+        font_size = getattr(style, 'font_size', 72)
+        
+        # Create image with text - white text on black background
         cmd = (
-            f"convert -size 1920x1080 xc:transparent -font {style.font_family} "
-            f"-pointsize {style.font_size} -fill '{style.color}' "
-            f"-stroke '{style.stroke_color}' -strokewidth {style.stroke_width} "
-            f"-gravity center -annotate 0 @{text_path} {output_path}"
+            f'convert -size 1920x200 xc:black -alpha set -background none '
+            f'-fill white -font Arial -pointsize {font_size} '
+            f'-gravity center -annotate 0 @"{text_path}" '
+            f'-channel A -evaluate set 50% '  # Make background 50% transparent
+            f'"{output_path}"'
         )
+        print(f"Creating caption image with command: {cmd}")  # Debug print
         self._run_command(cmd)
+        
+        # Clean up text file
+        if os.path.exists(text_path):
+            os.remove(text_path)
         
         return output_path 

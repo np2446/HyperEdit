@@ -165,7 +165,7 @@ export default function VideoEditor() {
     <div className="container mx-auto px-4 py-12 max-w-6xl">
       <div className="mb-8">
         <h1 className="text-4xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-purple-400 via-cyan-500 to-emerald-400 mb-2">
-          AI Video Editor
+          HyperEdit
         </h1>
         <p className="text-zinc-400">Upload your video, describe your edits, and let AI do the magic</p>
       </div>

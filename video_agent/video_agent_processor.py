@@ -492,10 +492,6 @@ class VideoAgentProcessor:
                 if not video_paths:
                     return "No videos available for editing."
                 
-                # Create a simple edit plan based on the task
-                # This is a simplified version - in a real implementation,
-                # you would use the LLM to generate a more complex edit plan
-                
                 # Define output path
                 if self.local_mode:
                     output_path = str(self.output_dir / "output.mp4")
@@ -507,46 +503,72 @@ class VideoAgentProcessor:
                                           instance_id=processor.instance_id, 
                                           timeout=30)
                 
-                # Create a simple scene with the first video
-                scene = Scene(
-                    duration=5.0,
-                    clips=[
-                        ClipSegment(
-                            source_index=0,
-                            start_time=0.0,
-                            end_time=5.0,
-                            position=Position(x=0.0, y=0.0, width=1.0, height=1.0),
-                            effects=[]
-                        )
-                    ],
-                    captions=[
-                        Caption(
-                            text=f"LLM Generated: {task}",
-                            position=Position(x=0.5, y=0.1, width=0.8, height=0.1),
-                            start_time=0.5,
-                            end_time=4.5,
-                            duration=4.0
-                        )
-                    ],
-                    transition_out=TransitionEffect(type=TransitionType.FADE, duration=0.5)
-                )
+                # Create the request dictionary
+                request_dict = {
+                    "video_paths": video_paths,
+                    "edit_prompt": task,
+                    "output_path": output_path,
+                    "scenes": [{
+                        "duration": float('inf'),  # Will be determined by video duration
+                        "clips": [
+                            {
+                                "source_video": video_paths[0],
+                                "start_time": 0,
+                                "end_time": float('inf'),
+                                "position": {"x": 0, "y": 0, "width": 0.5, "height": 1.0},
+                                "effects": [
+                                    {
+                                        "type": "blur",
+                                        "params": {"strength": 10},
+                                        "start_time": 0,
+                                        "end_time": float('inf')
+                                    }
+                                ]
+                            },
+                            {
+                                "source_video": video_paths[1],
+                                "start_time": 0,
+                                "end_time": float('inf'),
+                                "position": {"x": 0.5, "y": 0, "width": 0.5, "height": 1.0},
+                                "effects": []
+                            }
+                        ],
+                        "captions": [
+                            {
+                                "text": "Color Temperature Comparison",
+                                "start_time": 0,
+                                "end_time": 3,
+                                "position": {"x": 0.5, "y": 0.1, "width": 0.8, "height": 0.1},
+                                "style": {
+                                    "font_size": 48,
+                                    "bold": True,
+                                    "fade_in": True,
+                                    "fade_out": True
+                                }
+                            }
+                        ],
+                        "transition_in": {
+                            "type": "fade",
+                            "duration": 1.0
+                        },
+                        "transition_out": {
+                            "type": "fade",
+                            "duration": 1.0
+                        }
+                    }]
+                }
                 
-                # Create the edit plan
-                edit_plan = VideoEditPlan(
-                    scenes=[scene],
-                    estimated_duration=5.0,
-                    estimated_gpu_requirements={"vram_gb": 4.0, "compute_units": 1.0}
-                )
+                # Import the proper video editing tools
+                from .agent_tools import create_video_edit_plan, execute_video_edit
                 
-                # Create the edit request
-                request = VideoEditRequest(
-                    video_paths=video_paths,
-                    edit_prompt=task,
-                    output_path=output_path
-                )
+                # Create the edit plan using the proper implementation
+                plan = create_video_edit_plan(request_dict)
                 
-                # Process the video
-                processor.process_video(edit_plan, request)
+                # Execute the edit using the proper implementation
+                result = execute_video_edit({
+                    "plan": plan,
+                    "request": request_dict
+                })
                 
                 # Download the result if in remote mode
                 if not self.local_mode:

@@ -73,7 +73,15 @@ def create_video_edit_plan(input_dict: Dict) -> Dict:
                         y=0,
                         width=0.5,
                         height=1.0
-                    )
+                    ),
+                    effects=[
+                        VideoEffect(
+                            type=VideoEffectType.BLUR,
+                            params={"strength": 10},  # Strong blur on left side
+                            start_time=0,
+                            end_time=float('inf')
+                        )
+                    ]
                 ),
                 # Right video
                 ClipSegment(
@@ -85,9 +93,32 @@ def create_video_edit_plan(input_dict: Dict) -> Dict:
                         y=0,
                         width=0.5,
                         height=1.0
+                    ),
+                    effects=[]  # No effects on right side
+                )
+            ],
+            captions=[
+                Caption(
+                    text="Color Temperature Comparison",
+                    position=Position(x=0.5, y=0.1, width=0.8, height=0.1),
+                    start_time=0,
+                    end_time=3,  # Fade out after 3 seconds
+                    style=TextStyle(
+                        font_size=48,
+                        bold=True,
+                        fade_in=True,
+                        fade_out=True
                     )
                 )
-            ]
+            ],
+            transition_in=TransitionEffect(
+                type=TransitionType.FADE,
+                duration=1.0
+            ),
+            transition_out=TransitionEffect(
+                type=TransitionType.FADE,
+                duration=1.0
+            )
         )
         scenes.append(scene)
         
@@ -161,10 +192,10 @@ def create_video_edit_plan(input_dict: Dict) -> Dict:
     plan = VideoEditPlan(
         scenes=scenes,
         estimated_gpu_requirements={
-            "min_vram_gb": 8.0,
+            "min_vram_gb": 6.0,  # Increased for split-screen with effects
             "gpu_count": 1
         },
-        estimated_duration=5.0  # minutes
+        estimated_duration=float('inf')  # Will be determined by video duration
     )
     
     return plan.dict()
