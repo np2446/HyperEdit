@@ -1,4 +1,4 @@
-# Project Jarvis - AI Video Editor
+# HyperEdit - AI Video Editor
 
 A video editing application that uses AI to process natural language editing requests and verifies LLM responses on-chain using Hyperbolic's Agent Kit.
 
