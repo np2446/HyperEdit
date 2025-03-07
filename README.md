@@ -3,6 +3,10 @@
 A video editing application that uses AI to process natural language editing requests and verifies LLM responses on-chain using Hyperbolic's Agent Kit.
 
 ## Pitch
+
+
+<img width="754" alt="Screenshot 2025-03-07 at 1 46 40 PM" src="https://github.com/user-attachments/assets/0b7648ba-0079-4a77-9872-4a4d1506b727" />
+
 https://www.youtube.com/watch?v=Qemztd5XH18
 
 ## Prerequisites
